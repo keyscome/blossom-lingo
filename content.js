@@ -1,4 +1,4 @@
-const CONTENT_VERSION = "1.0.3";
+const CONTENT_VERSION = "1.0.4";
 const STATE = { running: false, enabled: false, mode: "bilingual", abort: 0, lastUrl: location.href, rerunTimer: 0 };
 const SKIP = "pre, code, kbd, samp, script, style, textarea, input, select, button, nav, header, footer, [contenteditable='true'], [class*='monaco'], [class*='CodeMirror'], .llt-translation";
 const BLOCKS = "h1, h2, h3, h4, p, li, blockquote, figcaption, td, th";
@@ -225,32 +225,83 @@ async function exportCurrent() {
   progress("已保存当前章节：Markdown + HTML", "done");
 }
 
+function mergeCourseCatalogs(courses, pages) {
+  const pageById = new Map(pages.map((page) => [String(page.id), page]));
+  const slugCounts = new Map();
+  for (const page of pages) {
+    const slug = page.url?.match(/\/explore\/featured\/card\/([^/]+)\//)?.[1];
+    if (slug) slugCounts.set(slug, (slugCounts.get(slug) || 0) + 1);
+  }
+  const slug = [...slugCounts].sort((a, b) => b[1] - a[1])[0]?.[0] || courses.find((course) => course.slug)?.slug || "leetcode-explore";
+  const relevant = courses.filter((course) => course.slug === slug || (course.chapters || []).some((chapter) => (chapter.items || []).some((item) => pageById.has(String(item.id)))));
+  const chapterMap = new Map();
+  const chapterKey = (chapter) => (chapter.title || chapter.url || chapter.id || "其他内容").trim().toLowerCase();
+  for (const course of relevant) {
+    for (const chapter of course.chapters || []) {
+      const key = chapterKey(chapter);
+      const merged = chapterMap.get(key) || { ...chapter, order: Number.isFinite(chapter.order) ? chapter.order : 999, items: [] };
+      merged.order = Math.min(merged.order, Number.isFinite(chapter.order) ? chapter.order : 999);
+      merged.title ||= chapter.title; merged.url ||= chapter.url;
+      const items = new Map(merged.items.map((item) => [String(item.id), item]));
+      for (const item of chapter.items || []) {
+        const id = String(item.id);
+        const previous = items.get(id);
+        items.set(id, { ...previous, ...item, order: Math.min(previous?.order ?? 9999, item.order ?? 9999), type: item.type === "Exercise" ? "Exercise" : previous?.type || item.type });
+      }
+      merged.items = [...items.values()]; chapterMap.set(key, merged);
+    }
+  }
+  const chapters = [...chapterMap.values()].sort((a, b) => a.order - b.order || a.title.localeCompare(b.title));
+  const knownIds = new Set(chapters.flatMap((chapter) => chapter.items.map((item) => String(item.id))));
+  for (const page of pages) {
+    if (knownIds.has(String(page.id))) continue;
+    const path = page.chapterPath || page.url?.match(/\/\d+\/([^/]+)\/\d+\/?/)?.[1];
+    let chapter = chapters.find((candidate) => candidate.url?.includes(`/${path}/`) || candidate.path === path);
+    if (!chapter) {
+      chapter = chapters.find((candidate) => candidate.title?.toLowerCase() === String(path || "").replace(/-/g, " ").toLowerCase());
+    }
+    if (!chapter) {
+      chapter = chapters.find((candidate) => candidate.title === "其他已归档内容");
+      if (!chapter) { chapter = { title: "其他已归档内容", order: 999, items: [] }; chapters.push(chapter); }
+    }
+    chapter.items.push({ id: String(page.id), title: page.title, url: page.url, order: 9000 + (page.savedAt || 0) });
+  }
+  for (const chapter of chapters) chapter.items.sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999) || a.title.localeCompare(b.title));
+  const title = relevant.find((course) => course.title && course.title !== "LeetCode Explore")?.title || slug.split("-").map((word) => word ? word[0].toUpperCase() + word.slice(1) : "").join(" ");
+  return { slug, title, chapters };
+}
+
+function namespaceArticleHtml(value, pageId) {
+  const prefix = `${anchorId("article", pageId)}--`;
+  return value.replace(/id="([^"]+)"/g, (_match, id) => `id="${prefix}${id}"`).replace(/href="#([^"]+)"/g, (_match, id) => `href="#${prefix}${id}"`);
+}
+
 async function exportLibrary() {
   const stored = await storageGet(null);
   const pages = Object.entries(stored).filter(([key]) => key.startsWith("llt:page:")).map(([, value]) => value).sort((a, b) => a.savedAt - b.savedAt);
   if (!pages.length) throw new Error("归档为空；先翻译并保存至少一个章节");
   const pageById = new Map(pages.map((page) => [page.id, page]));
   const courses = Object.entries(stored).filter(([key]) => key.startsWith("llt:course:")).map(([, value]) => value);
-  const course = courses.sort((a, b) => {
-    const score = (value) => (value?.chapters || []).flatMap((chapter) => chapter.items || []).filter((item) => pageById.has(item.id)).length;
-    return score(b) - score(a) || (b.updatedAt || 0) - (a.updatedAt || 0);
-  })[0];
-  const isExercise = (item) => item.type === "Exercise";
-  const tocMd = course ? ["# 课程目录", "", "> ✓ 双语讲义　↗ 练习题链接　○ 尚未归档", "", ...course.chapters.flatMap((chapter, chapterIndex) => [`## ${chapterIndex + 1}. ${chapter.title}`, "", ...chapter.items.map((item, itemIndex) => {
+  const course = mergeCourseCatalogs(courses, pages);
+  const isExercise = (item) => item.type === "Exercise" || (!pageById.has(item.id) && !/\bquiz\b/i.test(item.title));
+  const tocMd = ["# 课程目录", "", "> ✓ 双语讲义　↗ 练习题链接　○ 尚未归档", "", ...course.chapters.flatMap((chapter, chapterIndex) => [`## ${chapterIndex + 1}. ${chapter.title}`, "", `[进入本章](#${anchorId("chapter", chapterIndex + 1)})`, "", ...chapter.items.map((item, itemIndex) => {
     const number = `${chapterIndex + 1}.${itemIndex + 1}`;
     if (pageById.has(item.id)) return `- ✓ [${number} ${item.title}](#${anchorId("article", item.id)})`;
     if (isExercise(item)) return `- ↗ [${number} ${item.title}](${item.url}) — 练习题`;
     return `- ○ ${number} ${item.title} — 尚未归档`;
-  }), ""])] : [];
-  const ordered = course ? course.chapters.flatMap((chapter) => chapter.items.map((item) => pageById.get(item.id)).filter(Boolean)) : pages;
-  const extras = pages.filter((page) => !ordered.some((orderedPage) => orderedPage.id === page.id));
-  const finalPages = [...ordered, ...extras];
-  const mdArticles = finalPages.map((page) => `<a id="${anchorId("article", page.id)}"></a>\n\n${page.markdown}\n\n[↑ 返回课程目录](#课程目录)`);
-  const md = [...tocMd, ...mdArticles].join("\n\n---\n\n");
-  const tocHtml = course ? `<nav id="toc" class="toc"><div class="section-label">CONTENTS</div><h1>课程目录</h1><p class="legend"><span>✓ 双语讲义</span><span>↗ 练习题链接</span><span>○ 尚未归档</span></p>${course.chapters.map((chapter, chapterIndex) => `<section class="toc-chapter"><h2><span>${String(chapterIndex + 1).padStart(2, "0")}</span>${escapeHtml(chapter.title)}</h2><ol>${chapter.items.map((item, itemIndex) => { const number = `${chapterIndex + 1}.${itemIndex + 1}`; if (pageById.has(item.id)) return `<li class="ready"><a href="#${anchorId("article", item.id)}"><b>✓</b><span>${number} ${escapeHtml(item.title)}</span></a></li>`; if (isExercise(item)) return `<li class="exercise"><a href="${escapeHtml(item.url)}"><b>↗</b><span>${number} ${escapeHtml(item.title)}</span><small>练习题</small></a></li>`; return `<li class="missing"><b>○</b><span>${number} ${escapeHtml(item.title)}</span><small>尚未归档</small></li>`; }).join("")}</ol></section>`).join("")}</nav>` : "";
-  const articles = finalPages.map((page, index) => { const main = page.html.match(/<main>([\s\S]*)<\/main>/)?.[1] || page.html.match(/<body>([\s\S]*)<\/body>/)?.[1] || ""; return `<article class="chapter-page" id="${anchorId("article", page.id)}"><div class="article-kicker">LESSON ${String(index + 1).padStart(2, "0")}</div>${main}<a class="back" href="#toc">↑ 返回课程目录</a></article>`; }).join("");
+  }), ""] )];
+  const ready = course.chapters.flatMap((chapter, chapterIndex) => chapter.items.map((item, itemIndex) => ({ chapter, chapterIndex, item, itemIndex, page: pageById.get(item.id) }))).filter((entry) => entry.page);
+  const mdBody = course.chapters.flatMap((chapter, chapterIndex) => {
+    const entries = ready.filter((entry) => entry.chapterIndex === chapterIndex);
+    if (!entries.length) return [];
+    const chapterAnchor = anchorId("chapter", chapterIndex + 1);
+    return [`<a id="${chapterAnchor}"></a>\n\n# 第 ${chapterIndex + 1} 章　${chapter.title}\n\n[↑ 总目录](#课程目录)`, ...entries.map((entry) => { const index = ready.indexOf(entry); const previous = ready[index - 1], next = ready[index + 1]; const nav = [`[↑ 本章目录](#${chapterAnchor})`, `[⌂ 总目录](#课程目录)`]; if (previous) nav.push(`[← ${previous.page.title}](#${anchorId("article", previous.page.id)})`); if (next) nav.push(`[${next.page.title} →](#${anchorId("article", next.page.id)})`); return `<a id="${anchorId("article", entry.page.id)}"></a>\n\n${entry.page.markdown}\n\n${nav.join(" · ")}`; })];
+  });
+  const md = [...tocMd, ...mdBody].join("\n\n---\n\n");
+  const tocHtml = `<nav id="toc" class="toc"><div class="section-label">CONTENTS</div><h1>课程目录</h1><p class="legend"><span>✓ 双语讲义</span><span>↗ 练习题链接</span><span>○ 尚未归档</span></p>${course.chapters.map((chapter, chapterIndex) => `<section class="toc-chapter"><h2><a href="#${anchorId("chapter", chapterIndex + 1)}"><span>${String(chapterIndex + 1).padStart(2, "0")}</span>${escapeHtml(chapter.title)}</a></h2><ol>${chapter.items.map((item, itemIndex) => { const number = `${chapterIndex + 1}.${itemIndex + 1}`; if (pageById.has(item.id)) return `<li class="ready"><a href="#${anchorId("article", item.id)}"><b>✓</b><span>${number} ${escapeHtml(item.title)}</span></a></li>`; if (isExercise(item)) return `<li class="exercise"><a href="${escapeHtml(item.url)}"><b>↗</b><span>${number} ${escapeHtml(item.title)}</span><small>练习题</small></a></li>`; return `<li class="missing"><b>○</b><span>${number} ${escapeHtml(item.title)}</span><small>尚未归档</small></li>`; }).join("")}</ol></section>`).join("")}</nav>`;
+  const articles = course.chapters.map((chapter, chapterIndex) => { const chapterReady = ready.filter((entry) => entry.chapterIndex === chapterIndex); if (!chapterReady.length) return ""; const chapterId = anchorId("chapter", chapterIndex + 1); const divider = `<section class="chapter-divider" id="${chapterId}"><div class="section-label">CHAPTER ${String(chapterIndex + 1).padStart(2, "0")}</div><h1>${escapeHtml(chapter.title)}</h1><ol>${chapterReady.map((entry) => `<li><a href="#${anchorId("article", entry.page.id)}">${entry.itemIndex + 1}. ${escapeHtml(entry.page.title)}</a></li>`).join("")}</ol><a class="back" href="#toc">⌂ 返回总目录</a></section>`; const bodies = chapterReady.map((entry) => { const index = ready.indexOf(entry), previous = ready[index - 1], next = ready[index + 1]; let main = entry.page.html.match(/<main>([\s\S]*)<\/main>/)?.[1] || entry.page.html.match(/<body>([\s\S]*)<\/body>/)?.[1] || ""; main = namespaceArticleHtml(main, entry.page.id); const nav = `<nav class="article-nav"><a href="#toc">⌂ 总目录</a><a href="#${chapterId}">↑ 本章目录</a>${previous ? `<a href="#${anchorId("article", previous.page.id)}">← ${escapeHtml(previous.page.title)}</a>` : ""}${next ? `<a href="#${anchorId("article", next.page.id)}">${escapeHtml(next.page.title)} →</a>` : ""}</nav>`; return `<article class="chapter-page" id="${anchorId("article", entry.page.id)}"><div class="article-kicker">${chapterIndex + 1}.${entry.itemIndex + 1} · ${escapeHtml(chapter.title)}</div>${nav}${main}${nav}</article>`; }).join(""); return divider + bodies; }).join("");
   const title = escapeHtml(course?.title && course.title !== "LeetCode Explore" ? course.title : "LeetCode Explore 双语讲义");
-  const css = `@page{size:A4;margin:17mm 16mm 19mm}*{box-sizing:border-box}html{scroll-behavior:smooth}body{font:16px/1.75 -apple-system,BlinkMacSystemFont,"Noto Sans CJK SC","PingFang SC",sans-serif;max-width:980px;margin:auto;padding:0 32px;color:#202124;background:#f5f2ec}.cover,.toc,.chapter-page{background:#fff;padding:58px 64px;margin:28px 0;border-radius:18px;box-shadow:0 8px 35px #27231c14}.cover{min-height:82vh;display:grid;align-content:center;break-after:page}.brand,.section-label,.article-kicker{font:700 12px/1.2 system-ui;letter-spacing:.18em;color:#b86400}.cover h1{font-size:3.2rem;line-height:1.1;max-width:700px;margin:.3em 0}.cover .subtitle{font-size:1.25rem;color:#68625b}.cover .meta{margin-top:5em;border:0}.toc{break-after:page}.legend{display:flex;gap:1.4em;color:#777;font-size:.85rem}.toc-chapter{margin:2em 0}.toc-chapter h2{display:flex;gap:.8em;border-bottom:1px solid #e7e0d6;padding-bottom:.35em}.toc-chapter h2 span{color:#c97813}.toc ol{list-style:none;padding:0}.toc li{display:flex;gap:.6em;padding:.28em 0}.toc li a,.toc li{color:#34312d;text-decoration:none}.toc li a{display:flex;gap:.6em;width:100%}.toc li b{color:#b86400}.toc small{margin-left:auto;color:#918a82}.missing{color:#999!important}.chapter-page{break-before:page}.chapter-page main>h1{font-size:2.15rem;line-height:1.2}.meta{font-size:.78rem;color:#817a72;border-bottom:1px solid #e7e0d6;padding-bottom:16px}.pair{margin:1.7em 0}.original{color:#555}.translation{margin-top:.65em;padding:.85em 1.1em;border-left:3px solid #d98300;background:#fff8ed;border-radius:0 8px 8px 0}code{font-family:"SFMono-Regular",Consolas,monospace;background:#f3f4f6;padding:.08em .28em;border-radius:4px}pre{white-space:pre-wrap;background:#f5f5f5;padding:1em}.back{display:inline-block;margin-top:2em;color:#a85d00;text-decoration:none}img,svg{max-width:100%}@media(max-width:700px){body{padding:0}.cover,.toc,.chapter-page{border-radius:0;margin:0;padding:30px 24px}.cover h1{font-size:2.3rem}.legend{display:block}}@media print{body{margin:0;padding:0;background:#fff;font-size:10.5pt}.cover,.toc,.chapter-page{box-shadow:none;border-radius:0;margin:0;padding:0}.cover{min-height:90vh}.pair{break-inside:auto}.translation,pre,blockquote,table{break-inside:avoid}.back{display:none}a{color:inherit}.toc a[href^="http"]:after{content:" ↗"}}`;
+  const css = `@page{size:A4;margin:17mm 16mm 19mm}*{box-sizing:border-box}html{scroll-behavior:smooth}body{font:16px/1.75 -apple-system,BlinkMacSystemFont,"Noto Sans CJK SC","PingFang SC",sans-serif;max-width:980px;margin:auto;padding:0 32px;color:#202124;background:#f5f2ec}.cover,.toc,.chapter-divider,.chapter-page{background:#fff;padding:58px 64px;margin:28px 0;border-radius:18px;box-shadow:0 8px 35px #27231c14}.cover{min-height:82vh;display:grid;align-content:center;break-after:page}.brand,.section-label,.article-kicker{font:700 12px/1.2 system-ui;letter-spacing:.18em;color:#b86400}.cover h1{font-size:3.2rem;line-height:1.1;max-width:700px;margin:.3em 0}.cover .subtitle{font-size:1.25rem;color:#68625b}.cover .meta{margin-top:5em;border:0}.toc{break-after:page}.legend{display:flex;gap:1.4em;color:#777;font-size:.85rem}.toc-chapter{margin:2em 0}.toc-chapter h2{border-bottom:1px solid #e7e0d6;padding-bottom:.35em}.toc-chapter h2 a{display:flex;gap:.8em;color:inherit;text-decoration:none}.toc-chapter h2 span{color:#c97813}.toc ol{list-style:none;padding:0}.toc li{display:flex;gap:.6em;padding:.28em 0}.toc li a,.toc li{color:#34312d;text-decoration:none}.toc li a{display:flex;gap:.6em;width:100%}.toc li b{color:#b86400}.toc small{margin-left:auto;color:#918a82}.missing{color:#999!important}.chapter-divider{min-height:65vh;display:grid;align-content:center;break-before:page;break-after:page}.chapter-divider h1{font-size:2.7rem}.chapter-divider a{color:#8a5200}.chapter-page{break-before:page}.chapter-page main>h1{font-size:2.15rem;line-height:1.2}.article-nav{display:flex;flex-wrap:wrap;gap:.55em 1.1em;margin:1em 0 2em;padding:.7em 0;border-top:1px solid #e7e0d6;border-bottom:1px solid #e7e0d6;font-size:.82rem}.article-nav a{color:#8a5200;text-decoration:none}.meta{font-size:.78rem;color:#817a72;border-bottom:1px solid #e7e0d6;padding-bottom:16px}.pair{margin:1.7em 0}.original{color:#555}.translation{margin-top:.65em;padding:.85em 1.1em;border-left:3px solid #d98300;background:#fff8ed;border-radius:0 8px 8px 0}code{font-family:"SFMono-Regular",Consolas,monospace;background:#f3f4f6;padding:.08em .28em;border-radius:4px}pre{white-space:pre-wrap;background:#f5f5f5;padding:1em}.back{display:inline-block;margin-top:2em;color:#a85d00;text-decoration:none}img,svg{max-width:100%}@media(max-width:700px){body{padding:0}.cover,.toc,.chapter-divider,.chapter-page{border-radius:0;margin:0;padding:30px 24px}.cover h1{font-size:2.3rem}.legend{display:block}}@media print{body{margin:0;padding:0;background:#fff;font-size:10.5pt}.cover,.toc,.chapter-divider,.chapter-page{box-shadow:none;border-radius:0;margin:0;padding:0}.cover{min-height:90vh}.chapter-divider{min-height:80vh}.pair{break-inside:auto}.translation,pre,blockquote,table{break-inside:avoid}.article-nav,.back{display:none}a{color:inherit}.toc a[href^="http"]:after{content:" ↗"}}`;
   const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title><style>${css}</style></head><body><header class="cover"><div class="brand">BLOSSOM LINGO</div><h1>${title}</h1><p class="subtitle">中英双语课程讲义</p><p class="meta">本地模型翻译 · 个人学习归档<br>${new Date().toLocaleDateString()}</p></header>${tocHtml}${articles}</body></html>`;
   const baseName = safeName(course?.title || "leetcode-explore");
   const markdownName = `${baseName}-bilingual.md`;
