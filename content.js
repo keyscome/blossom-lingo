@@ -1,4 +1,4 @@
-const CONTENT_VERSION = "1.0.1";
+const CONTENT_VERSION = "1.0.2";
 const STATE = { running: false, enabled: false, mode: "bilingual", abort: 0, lastUrl: location.href, rerunTimer: 0 };
 const SKIP = "pre, code, kbd, samp, script, style, textarea, input, select, button, nav, header, footer, [contenteditable='true'], [class*='monaco'], [class*='CodeMirror'], .llt-translation";
 const BLOCKS = "h1, h2, h3, h4, p, li, blockquote, figcaption, td, th";
@@ -111,7 +111,7 @@ function canonicalUrl(value = location.href) {
 
 function courseInfo() {
   const match = canonicalUrl().match(/\/explore\/featured\/card\/([^/]+)\/(\d+)\/([^/]+)\/(\d+)\/?/);
-  return match ? { slug: match[1], cardId: match[2], pathChapter: match[3], pageId: match[4] } : { slug: "leetcode-explore", cardId: "unknown", pathChapter: "unknown", pageId: location.pathname.replace(/\/$/, "").split("/").pop() };
+  return match ? { slug: match[1], cardId: match[1], chapterId: match[2], pathChapter: match[3], pageId: match[4] } : { slug: "leetcode-explore", cardId: "leetcode-explore", chapterId: "unknown", pathChapter: "unknown", pageId: location.pathname.replace(/\/$/, "").split("/").pop() };
 }
 
 function navigationSnapshot() {
@@ -229,8 +229,12 @@ async function exportLibrary() {
   const stored = await storageGet(null);
   const pages = Object.entries(stored).filter(([key]) => key.startsWith("llt:page:")).map(([, value]) => value).sort((a, b) => a.savedAt - b.savedAt);
   if (!pages.length) throw new Error("归档为空；先翻译并保存至少一个章节");
-  const course = Object.entries(stored).find(([key]) => key.startsWith("llt:course:"))?.[1];
   const pageById = new Map(pages.map((page) => [page.id, page]));
+  const courses = Object.entries(stored).filter(([key]) => key.startsWith("llt:course:")).map(([, value]) => value);
+  const course = courses.sort((a, b) => {
+    const score = (value) => (value?.chapters || []).flatMap((chapter) => chapter.items || []).filter((item) => pageById.has(item.id)).length;
+    return score(b) - score(a) || (b.updatedAt || 0) - (a.updatedAt || 0);
+  })[0];
   const isExercise = (item) => item.type === "Exercise";
   const tocMd = course ? ["# 课程目录", "", "> ✓ 双语讲义　↗ 练习题链接　○ 尚未归档", "", ...course.chapters.flatMap((chapter, chapterIndex) => [`## ${chapterIndex + 1}. ${chapter.title}`, "", ...chapter.items.map((item, itemIndex) => {
     const number = `${chapterIndex + 1}.${itemIndex + 1}`;

@@ -187,7 +187,8 @@ async function putBatch(batch) {
 }
 function batchLog(batch, text) { batch.logs = [...(batch.logs || []), { at: Date.now(), text }].slice(-80); }
 function cleanUrl(value) { const url = new URL(value); url.searchParams.delete("iframe"); url.hash = ""; return url.href; }
-function courseIdFromUrl(value) { return cleanUrl(value).match(/\/explore\/featured\/card\/[^/]+\/(\d+)\//)?.[1] || "unknown"; }
+function courseIdFromUrl(value) { return cleanUrl(value).match(/\/explore\/featured\/card\/([^/]+)\//)?.[1] || "unknown"; }
+function chapterIdFromUrl(value) { return cleanUrl(value).match(/\/explore\/featured\/card\/[^/]+\/(\d+)\//)?.[1] || null; }
 
 async function saveCourseCatalog(batch) {
   const courseId = courseIdFromUrl(batch.courseUrl);
@@ -207,7 +208,7 @@ async function saveCourseCatalog(batch) {
     for (const item of chapter.items) itemMap.set(item.id, { ...itemMap.get(item.id), ...item });
     return { ...previous, ...chapter, items: [...itemMap.values()].sort((a, b) => a.order - b.order) };
   });
-  const slug = cleanUrl(batch.courseUrl).match(/\/explore\/featured\/card\/([^/]+)\//)?.[1] || "leetcode-explore";
+  const slug = courseId;
   const inferredTitle = slug.split("-").map((word) => word ? word[0].toUpperCase() + word.slice(1) : "").join(" ");
   await chrome.storage.local.set({ [key]: { ...old, courseId, slug, title: old.title || inferredTitle, chapters, updatedAt: Date.now() } });
 }
@@ -225,10 +226,30 @@ async function navigateBatch(batch, url, delayMs) {
       discoveryTimer = setTimeout(async () => {
         const stalled = await getBatch();
         if (stalled?.status === "running" && stalled.phase === "discovery" && stalled.chapterIndex === expectedIndex) {
-          stalled.status = "blocked"; stalled.phase = "diagnostic"; stalled.error = `章节“${stalled.chapters[expectedIndex]?.title || "未知"}”在 15 秒内未识别到目录，任务已停止。`;
-          stalled.current = "需要检查章节 DOM"; batchLog(stalled, stalled.error); await putBatch(stalled);
+          const chapter = stalled.chapters[expectedIndex];
+          const key = chapterIdFromUrl(chapter?.url) || String(expectedIndex);
+          stalled.discoveryRetries ||= {};
+          if (!(stalled.discoveryRetries[key] || 0)) {
+            stalled.discoveryRetries[key] = 1;
+            batchLog(stalled, `${chapter?.title || "未知章节"}：20 秒内未收到 iframe 目录，自动重新加载一次`);
+            await putBatch(stalled);
+            try { await chrome.tabs.reload(stalled.tabId); }
+            catch (error) { stalled.status = "paused"; stalled.error = `重新加载批处理标签页失败：${error.message}`; await putBatch(stalled); return; }
+            clearTimeout(discoveryTimer);
+            discoveryTimer = setTimeout(async () => {
+              const retried = await getBatch();
+              if (retried?.status === "running" && retried.phase === "discovery" && retried.chapterIndex === expectedIndex) {
+                retried.status = "blocked"; retried.phase = "diagnostic";
+                retried.error = `章节“${chapter?.title || "未知"}”重新加载后 30 秒仍未识别到目录。可点击“继续”重新扫描当前章节。`;
+                retried.current = "等待重新扫描"; batchLog(retried, retried.error); await putBatch(retried);
+              }
+            }, 30000);
+            return;
+          }
+          stalled.status = "blocked"; stalled.phase = "diagnostic"; stalled.error = `章节“${chapter?.title || "未知"}”未识别到目录。可点击“继续”重新扫描当前章节。`;
+          stalled.current = "等待重新扫描"; batchLog(stalled, stalled.error); await putBatch(stalled);
         }
-      }, 15000);
+      }, 20000);
     }
   }, delayMs);
 }
@@ -269,7 +290,7 @@ async function onBatchFrameReady(message, sender) {
   if (batch.phase === "discovery" && message.frameKind === "chapter" && message.itemLinks?.length) {
     clearTimeout(discoveryTimer);
     const chapter = batch.chapters[batch.chapterIndex];
-    if (!chapter || !pageUrl.startsWith(cleanUrl(chapter.url))) return null;
+    if (!chapter || chapterIdFromUrl(pageUrl) !== chapterIdFromUrl(chapter.url)) return null;
     const seen = new Set(batch.items.map((item) => item.id));
     for (const item of message.itemLinks) if (!seen.has(item.id)) { batch.items.push({ ...item, chapterTitle: chapter.title, chapterOrder: chapter.order, status: "pending" }); seen.add(item.id); }
     chapter.scanned = true; chapter.itemCount = message.itemLinks.length; batch.chapterIndex++;
@@ -329,7 +350,7 @@ async function onBatchItemDone(message, sender) {
 async function controlBatch(message) {
   const batch = await getBatch(); if (!batch) throw new Error("没有批处理任务");
   if (message.action === "pause") { const aborted = abortActiveRequests(); batch.status = "paused"; clearTimeout(batchTimer); batchLog(batch, `任务已暂停${aborted ? `，已中断 ${aborted} 个推理请求` : ""}`); }
-  if (message.action === "resume") { batch.status = "running"; batchLog(batch, "任务继续"); const url = batch.phase === "discovery" ? batch.chapters[batch.chapterIndex]?.url : batch.items[batch.itemIndex]?.url; await putBatch(batch); if (url) await navigateBatch(batch, url, 500); return batch; }
+  if (message.action === "resume") { if (batch.phase === "diagnostic" && batch.chapters?.[batch.chapterIndex]) { batch.phase = "discovery"; batch.error = ""; } batch.status = "running"; batchLog(batch, batch.phase === "discovery" ? "重新扫描当前章节" : "任务继续"); const url = batch.phase === "discovery" ? batch.chapters[batch.chapterIndex]?.url : batch.items[batch.itemIndex]?.url; await putBatch(batch); if (url) await navigateBatch(batch, url, 500); return batch; }
   if (message.action === "cancel") { const aborted = abortActiveRequests(); batch.status = "cancelled"; batch.finishedAt = Date.now(); clearTimeout(batchTimer); batchLog(batch, `任务已取消${aborted ? "，当前未完成批次未缓存" : ""}；此前完成的段落缓存、文章归档和课程目录均保留`); }
   if (message.action === "retryFailed") {
     if (batch.status === "running") throw new Error("请先等待当前任务结束或将其取消");
