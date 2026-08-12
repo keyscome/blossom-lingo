@@ -1,0 +1,31 @@
+.llt-translation {
+  margin: 0.45rem 0 0.85rem;
+  padding: 0.55rem 0.75rem;
+  border-left: 3px solid #ffa116;
+  border-radius: 0 6px 6px 0;
+  background: color-mix(in srgb, #ffa116 9%, transparent);
+  color: inherit;
+  font-size: 0.96em;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+.llt-translation[data-llt-loading="true"] { opacity: 0.55; }
+.llt-original-hidden { display: none !important; }
+#llt-progress {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 2147483647;
+  max-width: min(420px, calc(100vw - 40px));
+  padding: 12px 16px;
+  border: 1px solid rgba(255, 161, 22, 0.55);
+  border-radius: 10px;
+  background: #202124;
+  color: #fff;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+  font: 14px/1.5 system-ui, sans-serif;
+}
+#llt-progress[data-kind="working"]::before { content: "⏳ "; }
+#llt-progress[data-kind="done"]::before { content: "✓ "; color: #70d98b; }
+#llt-progress[data-kind="error"] { border-color: #e35d6a; }
+#llt-progress[data-kind="error"]::before { content: "⚠ "; }
