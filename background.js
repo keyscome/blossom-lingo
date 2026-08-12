@@ -183,7 +183,7 @@ async function getBatch() { return (await chrome.storage.local.get(BATCH_KEY))[B
 async function archiveBatchHistory(batch) {
   const stored = await chrome.storage.local.get(BATCH_HISTORY_KEY);
   const cutoff = Date.now() - HISTORY_MAX_AGE_MS;
-  const snapshot = { id: batch.id || `${batch.startedAt}:${batch.courseUrl}`, courseUrl: batch.courseUrl, model: batch.model, status: batch.status, phase: batch.phase, startedAt: batch.startedAt, finishedAt: batch.finishedAt || Date.now(), total: batch.total || 0, completed: batch.completed || 0, succeeded: batch.succeeded || 0, exercises: batch.exercises || 0, skipped: batch.skipped || 0, failed: batch.failed || 0, logs: batch.logs || [] };
+  const snapshot = { id: batch.id || `${batch.startedAt}:${batch.courseUrl}`, courseId: batch.courseId || courseIdFromUrl(batch.courseUrl), courseUrl: batch.courseUrl, model: batch.model, status: batch.status, phase: batch.phase, startedAt: batch.startedAt, finishedAt: batch.finishedAt || Date.now(), total: batch.total || 0, completed: batch.completed || 0, succeeded: batch.succeeded || 0, exercises: batch.exercises || 0, skipped: batch.skipped || 0, failed: batch.failed || 0, logs: batch.logs || [] };
   const history = [snapshot, ...(stored[BATCH_HISTORY_KEY] || []).filter((item) => item.id !== snapshot.id && (item.finishedAt || 0) >= cutoff)].slice(0, HISTORY_MAX_TASKS);
   await chrome.storage.local.set({ [BATCH_HISTORY_KEY]: history });
 }
@@ -270,10 +270,14 @@ async function navigateBatch(batch, url, delayMs) {
 
 async function startBatch(message) {
   const existing = await getBatch();
-  if (["running", "paused", "blocked"].includes(existing?.status)) { await openProgress(); return existing; }
+  const requestedCourseId = courseIdFromUrl(message.courseUrl);
+  if (["running", "paused", "blocked"].includes(existing?.status)) {
+    await openProgress();
+    throw new Error(existing.courseId === requestedCourseId ? "当前课程已有未结束任务，已打开进度页" : `已有另一门课程任务正在运行：${existing.courseId || courseIdFromUrl(existing.courseUrl)}。请先完成或取消它。`);
+  }
   const tab = await chrome.tabs.create({ url: message.courseUrl, active: false });
   if (message.model) await chrome.storage.sync.set({ model: message.model });
-  const batch = { id: crypto.randomUUID(), version: 4, status: "running", phase: "overview", courseUrl: cleanUrl(message.courseUrl), tabId: tab.id, model: message.model || (await settings()).model, maxItems: Math.max(0, Number(message.maxItems || 0)), intervalMs: Math.max(3000, Number(message.intervalSeconds || 8) * 1000), startedAt: Date.now(), chapters: [], items: [], completed: 0, succeeded: 0, exercises: 0, skipped: 0, failed: 0, current: "读取课程目录", retries: {}, logs: [] };
+  const batch = { id: crypto.randomUUID(), version: 5, courseId: requestedCourseId, status: "running", phase: "overview", courseUrl: cleanUrl(message.courseUrl), tabId: tab.id, model: message.model || (await settings()).model, maxItems: Math.max(0, Number(message.maxItems || 0)), intervalMs: Math.max(3000, Number(message.intervalSeconds || 8) * 1000), startedAt: Date.now(), chapters: [], items: [], completed: 0, succeeded: 0, exercises: 0, skipped: 0, failed: 0, current: "读取课程目录", retries: {}, logs: [] };
   batchLog(batch, "任务已启动，正在读取课程首页"); await putBatch(batch);
   await openProgress();
   return batch;
@@ -330,13 +334,18 @@ async function onBatchFrameReady(message, sender) {
     const item = batch.items[batch.itemIndex];
     if (item && pageUrl === cleanUrl(item.url) && item.status === "pending") {
       clearTimeout(articleTimer);
-      // Normal problem links can be classified quickly. Quizzes sometimes
-      // render their article content late, so give them the full readiness
-      // window before deciding that they are link-only entries.
-      const readinessMs = /\bquiz\b/i.test(item.title) ? 30000 : 6000;
+      const articleLike = /^(article|quiz)$/i.test(item.type || "") || /\bquiz\b/i.test(item.title);
+      const problemLike = /^(problem|exercise)$/i.test(item.type || "");
+      const readinessMs = articleLike ? 30000 : problemLike ? 6000 : 15000;
       articleTimer = setTimeout(async () => {
         const latest = await getBatch(); const current = latest?.items?.[latest.itemIndex];
-        if (latest?.status === "running" && current?.id === item.id && current.status === "pending") await onBatchItemDone({ itemId: item.id, status: "exercise", error: "练习题页面：不含课程讲义正文，已保留原始链接" }, { tab: { id: latest.tabId } });
+        if (latest?.status !== "running" || current?.id !== item.id || current.status !== "pending") return;
+        const result = problemLike
+          ? { itemId: item.id, status: "exercise", error: "在线练习题：已保留原始链接，不归档编辑器页面" }
+          : articleLike
+            ? { itemId: item.id, status: "failed", error: "课程文章或测验正文在 30 秒内未加载" }
+            : { itemId: item.id, status: "skipped", error: `未知课程内容类型“${item.type || "unknown"}”，已保留链接待检查` };
+        await onBatchItemDone(result, { tab: { id: latest.tabId } });
       }, readinessMs);
     }
   }

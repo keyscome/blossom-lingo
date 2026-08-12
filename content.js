@@ -1,4 +1,4 @@
-const CONTENT_VERSION = "1.0.5";
+const CONTENT_VERSION = "1.1.0";
 const STATE = { running: false, enabled: false, mode: "bilingual", abort: 0, lastUrl: location.href, rerunTimer: 0 };
 const SKIP = "pre, code, kbd, samp, script, style, textarea, input, select, button, nav, header, footer, [contenteditable='true'], [class*='monaco'], [class*='CodeMirror'], .llt-translation";
 const BLOCKS = "h1, h2, h3, h4, p, li, blockquote, figcaption, td, th";
@@ -183,9 +183,20 @@ function buildArchive() {
   const title = articleTitle();
   const info = courseInfo();
   const blocks = [...rootNode().querySelectorAll(BLOCKS)].filter((element) => element.dataset.lltDone === "1");
+  const visuals = [...rootNode().querySelectorAll("figure, img")].filter((element) => !element.closest(BLOCKS) && (element.tagName === "FIGURE" || !element.closest("figure")));
+  const archiveNodes = [...blocks, ...visuals].sort((a, b) => a === b ? 0 : a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
   const markdown = [`# ${title}`, "", `> Source: ${canonicalUrl()}`, `> Saved: ${new Date().toISOString()}`, ""];
   const htmlBlocks = [];
-  for (const element of blocks) {
+  const mediaCount = rootNode().querySelectorAll("video, iframe").length;
+  for (const element of archiveNodes) {
+    if (element.matches("figure, img")) {
+      const clone = element.cloneNode(true);
+      const images = clone.matches("img") ? [clone] : [...clone.querySelectorAll("img")];
+      images.forEach((image, index) => { const original = element.matches("img") ? element : element.querySelectorAll("img")[index]; if (original?.src) image.src = original.src; image.removeAttribute("srcset"); });
+      clone.querySelectorAll?.("video, iframe, script").forEach((node) => node.remove());
+      const first = images[0]; if (first?.src) markdown.push(`![${first.alt || "课程图示"}](${first.src})`, "");
+      htmlBlocks.push(`<div class="visual">${clone.outerHTML}</div>`); continue;
+    }
     const translation = element.nextElementSibling?.classList.contains("llt-translation") ? element.nextElementSibling : null;
     if (!translation) continue;
     const original = markdownInline(element);
@@ -195,8 +206,10 @@ function buildArchive() {
     htmlBlocks.push(`<section class="pair"><div class="original">${element.outerHTML}</div><div class="translation">${translation.innerHTML}</div></section>`);
   }
   const printCss = `@page{size:A4;margin:18mm 16mm 20mm}*{box-sizing:border-box}body{font:16px/1.75 -apple-system,BlinkMacSystemFont,"Noto Sans CJK SC","PingFang SC",sans-serif;max-width:920px;margin:42px auto;padding:0 28px;color:#202124}h1{font-size:2.15rem;line-height:1.25;margin:0 0 .5em}h2,h3{break-after:avoid}.meta{font-size:12px;color:#777;border-bottom:1px solid #ddd;padding-bottom:16px}.pair{margin:1.6em 0;break-inside:avoid}.original{color:#555}.translation{margin-top:.65em;padding:.8em 1.05em;border-left:3px solid #d98300;background:#fff8ed}code{font-family:"SFMono-Regular",Consolas,monospace;background:#f3f4f6;padding:.08em .28em;border-radius:4px}pre{overflow:auto;background:#f5f5f5;padding:1em;white-space:pre-wrap}img,svg{max-width:100%}a{color:#245faa;text-decoration:none}nav{break-after:page}nav li{margin:.35em 0}.chapter-page{break-before:page}@media print{body{margin:0;padding:0;font-size:10.5pt}.pair{break-inside:auto}.translation,pre,blockquote,table{break-inside:avoid}a{color:inherit}.meta{font-size:8.5pt}}`;
-  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title.replace(/[<>&]/g, "")}</title><style>${printCss}</style></head><body><main><h1>${title.replace(/[<>&]/g, "")}</h1><p class="meta">来源：${canonicalUrl()}<br>归档时间：${new Date().toLocaleString()}</p>${htmlBlocks.join("\n")}</main></body></html>`;
-  return { id: info.pageId, courseId: info.cardId, chapterPath: info.pathChapter, title, url: canonicalUrl(), savedAt: Date.now(), blockCount: htmlBlocks.length, markdown: markdown.join("\n"), html };
+  if (mediaCount) markdown.splice(5, 0, `> 本页包含 ${mediaCount} 个在线课程媒体；离线讲义不复制视频，请通过 Source 返回已购买课程观看。`, "");
+  const mediaNote = mediaCount ? `<aside class="media-note">本页包含 ${mediaCount} 个在线课程媒体。离线讲义不复制视频，请通过来源地址返回已购买课程观看。</aside>` : "";
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title.replace(/[<>&]/g, "")}</title><style>${printCss}.media-note{padding:12px 15px;background:#eef5ff;border-left:3px solid #4b78b8;margin:1em 0}</style></head><body><main><h1>${title.replace(/[<>&]/g, "")}</h1><p class="meta">来源：<a href="${canonicalUrl()}">${canonicalUrl()}</a><br>归档时间：${new Date().toLocaleString()}</p>${mediaNote}${htmlBlocks.join("\n")}</main></body></html>`;
+  return { id: info.pageId, courseId: info.cardId, chapterPath: info.pathChapter, title, url: canonicalUrl(), savedAt: Date.now(), blockCount: blocks.length, mediaCount, markdown: markdown.join("\n"), html };
 }
 
 function safeName(value) { return value.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().slice(0, 100) || "leetcode-explore"; }
@@ -212,14 +225,14 @@ function downloadText(filename, content, type) {
 async function archiveCurrent() {
   const page = buildArchive();
   if (!page.blockCount) throw new Error("请先完成当前页面翻译");
-  await storageSet({ [`llt:page:${page.id}`]: page });
+  await storageSet({ [`llt:page:${page.courseId}:${page.id}`]: page });
   await mergeNavigation();
   return page;
 }
 
 async function exportCurrent() {
   const page = await archiveCurrent();
-  const name = safeName(page.title);
+  const name = `${safeName(page.courseId)}--${safeName(page.title)}`;
   downloadText(`${name}.md`, page.markdown, "text/markdown;charset=utf-8");
   downloadText(`${name}.html`, page.html, "text/html;charset=utf-8");
   progress("已保存当前章节：Markdown + HTML", "done");
@@ -276,21 +289,22 @@ function namespaceArticleHtml(value, pageId) {
   return value.replace(/id="([^"]+)"/g, (_match, id) => `id="${prefix}${id}"`).replace(/href="#([^"]+)"/g, (_match, id) => `href="#${prefix}${id}"`);
 }
 
-async function exportLibrary() {
+async function exportLibrary(requestedCourseId = courseInfo().slug) {
   const stored = await storageGet(null);
-  const pages = Object.entries(stored).filter(([key]) => key.startsWith("llt:page:")).map(([, value]) => value).sort((a, b) => a.savedAt - b.savedAt);
-  if (!pages.length) throw new Error("归档为空；先翻译并保存至少一个章节");
-  const pageById = new Map(pages.map((page) => [page.id, page]));
-  const courses = Object.entries(stored).filter(([key]) => key.startsWith("llt:course:")).map(([, value]) => value);
+  const coursePages = Object.entries(stored).filter(([key]) => key.startsWith("llt:page:")).map(([, value]) => value).filter((page) => page.courseId === requestedCourseId || page.url?.includes(`/featured/card/${requestedCourseId}/`)).sort((a, b) => a.savedAt - b.savedAt);
+  const pages = [...new Map(coursePages.map((page) => [String(page.id), page])).values()];
+  if (!pages.length) throw new Error(`当前课程“${requestedCourseId}”尚无归档；不会混入其他课程内容`);
+  const pageById = new Map(pages.map((page) => [String(page.id), page]));
+  const courses = Object.entries(stored).filter(([key, value]) => key === `llt:course:${requestedCourseId}` || value?.slug === requestedCourseId || (value?.chapters || []).some((chapter) => chapter.url?.includes(`/featured/card/${requestedCourseId}/`))).map(([, value]) => value);
   const course = mergeCourseCatalogs(courses, pages);
-  const isExercise = (item) => item.type === "Exercise" || (!pageById.has(item.id) && !/\bquiz\b/i.test(item.title));
+  const isExercise = (item) => /^(problem|exercise)$/i.test(item.type || "");
   const tocMd = ["# 课程目录", "", "> ✓ 双语讲义　↗ 练习题链接　○ 尚未归档", "", ...course.chapters.flatMap((chapter, chapterIndex) => [`## ${chapterIndex + 1}. ${chapter.title}`, "", `[进入本章](#${anchorId("chapter", chapterIndex + 1)})`, "", ...chapter.items.map((item, itemIndex) => {
     const number = `${chapterIndex + 1}.${itemIndex + 1}`;
-    if (pageById.has(item.id)) return `- ✓ [${number} ${item.title}](#${anchorId("article", item.id)})`;
+    if (pageById.has(String(item.id))) return `- ✓ [${number} ${item.title}](#${anchorId("article", item.id)})`;
     if (isExercise(item)) return `- ↗ [${number} ${item.title}](${item.url}) — 练习题`;
     return `- ○ ${number} ${item.title} — 尚未归档`;
   }), ""] )];
-  const ready = course.chapters.flatMap((chapter, chapterIndex) => chapter.items.map((item, itemIndex) => ({ chapter, chapterIndex, item, itemIndex, page: pageById.get(item.id) }))).filter((entry) => entry.page);
+  const ready = course.chapters.flatMap((chapter, chapterIndex) => chapter.items.map((item, itemIndex) => ({ chapter, chapterIndex, item, itemIndex, page: pageById.get(String(item.id)) }))).filter((entry) => entry.page);
   const mdBody = course.chapters.flatMap((chapter, chapterIndex) => {
     const entries = ready.filter((entry) => entry.chapterIndex === chapterIndex);
     if (!entries.length) return [];
@@ -298,7 +312,7 @@ async function exportLibrary() {
     return [`<a id="${chapterAnchor}"></a>\n\n# 第 ${chapterIndex + 1} 章　${chapter.title}\n\n[↑ 总目录](#课程目录)`, ...entries.map((entry) => { const index = ready.indexOf(entry); const previous = ready[index - 1], next = ready[index + 1]; const nav = [`[↑ 本章目录](#${chapterAnchor})`, `[⌂ 总目录](#课程目录)`]; if (previous) nav.push(`[← ${previous.page.title}](#${anchorId("article", previous.page.id)})`); if (next) nav.push(`[${next.page.title} →](#${anchorId("article", next.page.id)})`); return `<a id="${anchorId("article", entry.page.id)}"></a>\n\n${entry.page.markdown}\n\n${nav.join(" · ")}`; })];
   });
   const md = [...tocMd, ...mdBody].join("\n\n---\n\n");
-  const tocHtml = `<nav id="toc" class="toc"><div class="section-label">CONTENTS</div><h1>课程目录</h1><p class="legend"><span>✓ 双语讲义</span><span>↗ 练习题链接</span><span>○ 尚未归档</span></p>${course.chapters.map((chapter, chapterIndex) => `<section class="toc-chapter"><h2><a href="#${anchorId("chapter", chapterIndex + 1)}"><span>${String(chapterIndex + 1).padStart(2, "0")}</span>${escapeHtml(chapter.title)}</a></h2><ol>${chapter.items.map((item, itemIndex) => { const number = `${chapterIndex + 1}.${itemIndex + 1}`; if (pageById.has(item.id)) return `<li class="ready"><a href="#${anchorId("article", item.id)}"><b>✓</b><span>${number} ${escapeHtml(item.title)}</span></a></li>`; if (isExercise(item)) return `<li class="exercise"><a href="${escapeHtml(item.url)}"><b>↗</b><span>${number} ${escapeHtml(item.title)}</span><small>练习题</small></a></li>`; return `<li class="missing"><b>○</b><span>${number} ${escapeHtml(item.title)}</span><small>尚未归档</small></li>`; }).join("")}</ol></section>`).join("")}</nav>`;
+  const tocHtml = `<nav id="toc" class="toc"><div class="section-label">CONTENTS</div><h1>课程目录</h1><p class="legend"><span>✓ 双语讲义</span><span>↗ 练习题链接</span><span>○ 尚未归档</span></p>${course.chapters.map((chapter, chapterIndex) => `<section class="toc-chapter"><h2><a href="#${anchorId("chapter", chapterIndex + 1)}"><span>${String(chapterIndex + 1).padStart(2, "0")}</span>${escapeHtml(chapter.title)}</a></h2><ol>${chapter.items.map((item, itemIndex) => { const number = `${chapterIndex + 1}.${itemIndex + 1}`; if (pageById.has(String(item.id))) return `<li class="ready"><a href="#${anchorId("article", item.id)}"><b>✓</b><span>${number} ${escapeHtml(item.title)}</span></a></li>`; if (isExercise(item)) return `<li class="exercise"><a href="${escapeHtml(item.url)}"><b>↗</b><span>${number} ${escapeHtml(item.title)}</span><small>练习题</small></a></li>`; return `<li class="missing"><b>○</b><span>${number} ${escapeHtml(item.title)}</span><small>尚未归档</small></li>`; }).join("")}</ol></section>`).join("")}</nav>`;
   const articles = course.chapters.map((chapter, chapterIndex) => { const chapterReady = ready.filter((entry) => entry.chapterIndex === chapterIndex); if (!chapterReady.length) return ""; const chapterId = anchorId("chapter", chapterIndex + 1); const divider = `<section class="chapter-divider" id="${chapterId}"><div class="section-label">CHAPTER ${String(chapterIndex + 1).padStart(2, "0")}</div><h1>${escapeHtml(chapter.title)}</h1><ol>${chapterReady.map((entry) => `<li><a href="#${anchorId("article", entry.page.id)}">${entry.itemIndex + 1}. ${escapeHtml(entry.page.title)}</a></li>`).join("")}</ol><a class="back" href="#toc">⌂ 返回总目录</a></section>`; const bodies = chapterReady.map((entry) => { const index = ready.indexOf(entry), previous = ready[index - 1], next = ready[index + 1]; let main = entry.page.html.match(/<main>([\s\S]*)<\/main>/)?.[1] || entry.page.html.match(/<body>([\s\S]*)<\/body>/)?.[1] || ""; main = namespaceArticleHtml(main, entry.page.id); const nav = `<nav class="article-nav"><a href="#toc">⌂ 总目录</a><a href="#${chapterId}">↑ 本章目录</a>${previous ? `<a href="#${anchorId("article", previous.page.id)}">← ${escapeHtml(previous.page.title)}</a>` : ""}${next ? `<a href="#${anchorId("article", next.page.id)}">${escapeHtml(next.page.title)} →</a>` : ""}</nav>`; return `<article class="chapter-page" id="${anchorId("article", entry.page.id)}"><div class="article-kicker">${chapterIndex + 1}.${entry.itemIndex + 1} · ${escapeHtml(chapter.title)}</div>${nav}${main}${nav}</article>`; }).join(""); return divider + bodies; }).join("");
   const title = escapeHtml(course?.title && course.title !== "LeetCode Explore" ? course.title : "LeetCode Explore 双语讲义");
   const css = `@page{size:A4;margin:17mm 16mm 19mm}*{box-sizing:border-box}html{scroll-behavior:smooth}body{font:16px/1.75 -apple-system,BlinkMacSystemFont,"Noto Sans CJK SC","PingFang SC",sans-serif;max-width:980px;margin:auto;padding:0 32px;color:#202124;background:#f5f2ec}.cover,.toc,.chapter-divider,.chapter-page{background:#fff;padding:58px 64px;margin:28px 0;border-radius:18px;box-shadow:0 8px 35px #27231c14}.cover{min-height:82vh;display:grid;align-content:center;break-after:page}.brand,.section-label,.article-kicker{font:700 12px/1.2 system-ui;letter-spacing:.18em;color:#b86400}.cover h1{font-size:3.2rem;line-height:1.1;max-width:700px;margin:.3em 0}.cover .subtitle{font-size:1.25rem;color:#68625b}.cover .meta{margin-top:5em;border:0}.toc{break-after:page}.legend{display:flex;gap:1.4em;color:#777;font-size:.85rem}.toc-chapter{margin:2em 0}.toc-chapter h2{border-bottom:1px solid #e7e0d6;padding-bottom:.35em}.toc-chapter h2 a{display:flex;gap:.8em;color:inherit;text-decoration:none}.toc-chapter h2 span{color:#c97813}.toc ol{list-style:none;padding:0}.toc li{display:flex;gap:.6em;padding:.28em 0}.toc li a,.toc li{color:#34312d;text-decoration:none}.toc li a{display:flex;gap:.6em;width:100%}.toc li b{color:#b86400}.toc small{margin-left:auto;color:#918a82}.missing{color:#999!important}.chapter-divider{min-height:65vh;display:grid;align-content:center;break-before:page;break-after:page}.chapter-divider h1{font-size:2.7rem}.chapter-divider a{color:#8a5200}.chapter-page{break-before:page}.chapter-page main>h1{font-size:2.15rem;line-height:1.2}.article-nav{display:flex;flex-wrap:wrap;gap:.55em 1.1em;margin:1em 0 2em;padding:.7em 0;border-top:1px solid #e7e0d6;border-bottom:1px solid #e7e0d6;font-size:.82rem}.article-nav a{color:#8a5200;text-decoration:none}.meta{font-size:.78rem;color:#817a72;border-bottom:1px solid #e7e0d6;padding-bottom:16px}.pair{margin:1.7em 0}.original{color:#555}.translation{margin-top:.65em;padding:.85em 1.1em;border-left:3px solid #d98300;background:#fff8ed;border-radius:0 8px 8px 0}code{font-family:"SFMono-Regular",Consolas,monospace;background:#f3f4f6;padding:.08em .28em;border-radius:4px}pre{white-space:pre-wrap;background:#f5f5f5;padding:1em}.back{display:inline-block;margin-top:2em;color:#a85d00;text-decoration:none}img,svg{max-width:100%}@media(max-width:700px){body{padding:0}.cover,.toc,.chapter-divider,.chapter-page{border-radius:0;margin:0;padding:30px 24px}.cover h1{font-size:2.3rem}.legend{display:block}}@media print{body{margin:0;padding:0;background:#fff;font-size:10.5pt}.cover,.toc,.chapter-divider,.chapter-page{box-shadow:none;border-radius:0;margin:0;padding:0}.cover{min-height:90vh}.chapter-divider{min-height:80vh}.pair{break-inside:auto}.translation,pre,blockquote,table{break-inside:avoid}.article-nav,.back{display:none}a{color:inherit}.toc a[href^="http"]:after{content:" ↗"}}`;
@@ -411,7 +425,7 @@ function handleCommand(message) {
 chrome.runtime.onMessage.addListener((message, _sender, respond) => {
   if (message.type === "exportLibraryRequest") {
     if (window.top !== window) return false;
-    exportLibrary().then((result) => respond({ ok: true, result })).catch((error) => respond({ ok: false, error: error.message }));
+    exportLibrary(message.courseId || courseInfo().slug).then((result) => respond({ ok: true, result })).catch((error) => respond({ ok: false, error: error.message }));
     return true;
   }
   handleCommand(message);

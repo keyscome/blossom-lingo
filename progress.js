@@ -10,7 +10,7 @@ async function refresh() {
   const names = { overview: "读取课程首页", discovery: "发现课程目录", translation: "翻译并整理课程", diagnostic: "任务已阻塞", complete: "任务完成" };
   const terminal = ["complete", "cancelled", "blocked"].includes(b.status);
   const elapsed = (terminal && b.finishedAt ? b.finishedAt : Date.now()) - b.startedAt;
-  document.querySelector("#phase").textContent = `${names[b.phase] || b.phase} · ${b.status} · ${terminal ? "总用时" : "已运行"} ${duration(elapsed)}`;
+  document.querySelector("#phase").textContent = `${b.courseId || "LeetCode Explore"} · ${names[b.phase] || b.phase} · ${b.status} · ${terminal ? "总用时" : "已运行"} ${duration(elapsed)}`;
   document.querySelector("#fill").style.width = `${total ? done / total * 100 : 0}%`;
   document.querySelector("#current").textContent = b.error ? `问题：${b.error}` : `当前：${b.current || "—"}${b.nextAt > Date.now() ? ` · ${Math.ceil((b.nextAt - Date.now()) / 1000)} 秒后继续` : ""}`;
   document.querySelector("#done").textContent = `${done}/${total}`;
@@ -21,7 +21,7 @@ async function refresh() {
 
 async function refreshHistory() {
   const reply = await send({ type: "batchHistory" }); const history = reply?.result || []; const select = document.querySelector("#history");
-  const selected = select.value; select.replaceChildren(new Option("选择历史任务…", ""), ...history.map((task) => new Option(`${new Date(task.finishedAt).toLocaleString()} · ${task.status} · ${task.completed}/${task.total}`, task.id)));
+  const selected = select.value; select.replaceChildren(new Option("选择历史任务…", ""), ...history.map((task) => new Option(`${new Date(task.finishedAt).toLocaleString()} · ${task.courseId || "旧任务"} · ${task.status} · ${task.completed}/${task.total}`, task.id)));
   if (history.some((task) => task.id === selected)) select.value = selected;
   select.onchange = () => { const task = history.find((item) => item.id === select.value); document.querySelector("#historyLogs").textContent = task ? logText(task.logs) : ""; };
 }
