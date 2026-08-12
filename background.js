@@ -5,6 +5,9 @@ const DEFAULTS = {
   temperature: 0.1,
 };
 const BATCH_KEY = "llt:batch";
+const BATCH_HISTORY_KEY = "llt:batch-history";
+const HISTORY_MAX_TASKS = 20;
+const HISTORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 let batchTimer = 0;
 let articleTimer = 0;
 let discoveryTimer = 0;
@@ -166,7 +169,7 @@ async function health() {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (["startBatch", "batchFrameReady", "batchItemDone", "batchControl", "batchStatus", "openProgress", "ollamaStatus", "abortInference", "unloadModel"].includes(message.type)) {
+  if (["startBatch", "batchFrameReady", "batchItemDone", "batchControl", "batchStatus", "batchHistory", "openProgress", "ollamaStatus", "abortInference", "unloadModel"].includes(message.type)) {
     handleBatchMessage(message, _sender).then((result) => sendResponse({ ok: true, result })).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
@@ -177,15 +180,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 async function getBatch() { return (await chrome.storage.local.get(BATCH_KEY))[BATCH_KEY] || null; }
+async function archiveBatchHistory(batch) {
+  const stored = await chrome.storage.local.get(BATCH_HISTORY_KEY);
+  const cutoff = Date.now() - HISTORY_MAX_AGE_MS;
+  const snapshot = { id: batch.id || `${batch.startedAt}:${batch.courseUrl}`, courseUrl: batch.courseUrl, model: batch.model, status: batch.status, phase: batch.phase, startedAt: batch.startedAt, finishedAt: batch.finishedAt || Date.now(), total: batch.total || 0, completed: batch.completed || 0, succeeded: batch.succeeded || 0, exercises: batch.exercises || 0, skipped: batch.skipped || 0, failed: batch.failed || 0, logs: batch.logs || [] };
+  const history = [snapshot, ...(stored[BATCH_HISTORY_KEY] || []).filter((item) => item.id !== snapshot.id && (item.finishedAt || 0) >= cutoff)].slice(0, HISTORY_MAX_TASKS);
+  await chrome.storage.local.set({ [BATCH_HISTORY_KEY]: history });
+}
 async function putBatch(batch) {
-  batch.updatedAt = Date.now(); await chrome.storage.local.set({ [BATCH_KEY]: batch });
+  batch.updatedAt = Date.now();
+  if (["complete", "cancelled", "blocked"].includes(batch.status) && batch.historyArchivedStatus !== batch.status) {
+    batch.finishedAt ||= Date.now(); batch.historyArchivedStatus = batch.status; await archiveBatchHistory(batch);
+  }
+  await chrome.storage.local.set({ [BATCH_KEY]: batch });
   const total = batch.total || 0, done = batch.completed || 0;
   const text = batch.status === "complete" ? "✓" : batch.status === "paused" ? "Ⅱ" : batch.status === "blocked" ? "!" : batch.status === "running" ? (batch.phase === "discovery" ? "找" : total ? `${Math.round(done / total * 100)}%` : "…") : "";
   await chrome.action.setBadgeBackgroundColor({ color: batch.status === "complete" ? "#188038" : batch.status === "running" ? "#d97706" : "#b3261e" });
   await chrome.action.setBadgeText({ text });
   return batch;
 }
-function batchLog(batch, text) { batch.logs = [...(batch.logs || []), { at: Date.now(), text }].slice(-80); }
+function batchLog(batch, text) { batch.logs = [...(batch.logs || []), { at: Date.now(), text }].slice(-200); }
 function cleanUrl(value) { const url = new URL(value); url.searchParams.delete("iframe"); url.hash = ""; return url.href; }
 function courseIdFromUrl(value) { return cleanUrl(value).match(/\/explore\/featured\/card\/([^/]+)\//)?.[1] || "unknown"; }
 function chapterIdFromUrl(value) { return cleanUrl(value).match(/\/explore\/featured\/card\/[^/]+\/(\d+)\//)?.[1] || null; }
@@ -259,7 +273,7 @@ async function startBatch(message) {
   if (["running", "paused", "blocked"].includes(existing?.status)) { await openProgress(); return existing; }
   const tab = await chrome.tabs.create({ url: message.courseUrl, active: false });
   if (message.model) await chrome.storage.sync.set({ model: message.model });
-  const batch = { version: 3, status: "running", phase: "overview", courseUrl: cleanUrl(message.courseUrl), tabId: tab.id, model: message.model || (await settings()).model, maxItems: Math.max(0, Number(message.maxItems || 0)), intervalMs: Math.max(3000, Number(message.intervalSeconds || 8) * 1000), startedAt: Date.now(), chapters: [], items: [], completed: 0, succeeded: 0, exercises: 0, skipped: 0, failed: 0, current: "读取课程目录", retries: {}, logs: [] };
+  const batch = { id: crypto.randomUUID(), version: 4, status: "running", phase: "overview", courseUrl: cleanUrl(message.courseUrl), tabId: tab.id, model: message.model || (await settings()).model, maxItems: Math.max(0, Number(message.maxItems || 0)), intervalMs: Math.max(3000, Number(message.intervalSeconds || 8) * 1000), startedAt: Date.now(), chapters: [], items: [], completed: 0, succeeded: 0, exercises: 0, skipped: 0, failed: 0, current: "读取课程目录", retries: {}, logs: [] };
   batchLog(batch, "任务已启动，正在读取课程首页"); await putBatch(batch);
   await openProgress();
   return batch;
@@ -357,6 +371,7 @@ async function controlBatch(message) {
     const targets = (batch.items || []).filter((item) => item.status === "failed" || (item.status === "skipped" && /\bquiz\b/i.test(item.title)));
     if (!targets.length) throw new Error("没有需要重试的失败项");
     batch.items = targets.map((item) => ({ ...item, status: "pending", error: "" }));
+    batch.id = crypto.randomUUID(); batch.historyArchivedStatus = null;
     batch.status = "running"; batch.phase = "translation"; batch.itemIndex = 0; batch.total = targets.length;
     batch.completed = 0; batch.succeeded = 0; batch.exercises = 0; batch.skipped = 0; batch.failed = 0;
     batch.retries = {}; batch.startedAt = Date.now(); batch.finishedAt = null; batch.error = ""; batch.current = batch.items[0].title;
@@ -372,6 +387,7 @@ async function handleBatchMessage(message, sender) {
   if (message.type === "batchItemDone") return onBatchItemDone(message, sender);
   if (message.type === "batchControl") return controlBatch(message);
   if (message.type === "batchStatus") return getBatch();
+  if (message.type === "batchHistory") return (await chrome.storage.local.get(BATCH_HISTORY_KEY))[BATCH_HISTORY_KEY] || [];
   if (message.type === "openProgress") return openProgress();
   if (message.type === "ollamaStatus") return ollamaStatus();
   if (message.type === "abortInference") return { aborted: abortActiveRequests() };
@@ -380,7 +396,9 @@ async function handleBatchMessage(message, sender) {
 
 async function restoreBatchTimer() {
   const batch = await getBatch();
-  if (!batch || batch.status !== "running" || !batch.waitingFor) return;
+  if (!batch) return;
+  if (["complete", "cancelled", "blocked"].includes(batch.status) && batch.historyArchivedStatus !== batch.status) { await putBatch(batch); return; }
+  if (batch.status !== "running" || !batch.waitingFor) return;
   await navigateBatch(batch, batch.waitingFor, Math.max(250, (batch.nextAt || Date.now()) - Date.now()));
 }
 restoreBatchTimer().catch(() => {});

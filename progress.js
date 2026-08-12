@@ -1,8 +1,33 @@
 function send(message) { return new Promise((resolve) => chrome.runtime.sendMessage(message, resolve)); }
-function duration(ms) { const s=Math.floor(ms/1000); return `${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m ${s%60}s`; }
-async function refresh() { const reply=await send({type:"batchStatus"}); const b=reply?.result; if(!b)return; const discovering=b.phase==="overview"||b.phase==="discovery", total=discovering?(b.chapters.length||1):(b.total||b.items?.length||0), done=b.phase==="overview"?0:discovering?(b.chapterIndex||0):(b.completed||0); const names={overview:"读取课程首页",discovery:"发现课程目录",translation:"翻译并整理课程",diagnostic:"任务已阻塞",complete:"任务完成"}; document.querySelector("#phase").textContent=`${names[b.phase]||b.phase} · ${b.status} · 已运行 ${duration(Date.now()-b.startedAt)}`; document.querySelector("#fill").style.width=`${total?done/total*100:0}%`; document.querySelector("#current").textContent=b.error?`问题：${b.error}`:`当前：${b.current||"—"}${b.nextAt>Date.now()?` · ${Math.ceil((b.nextAt-Date.now())/1000)} 秒后继续`:""}`; document.querySelector("#done").textContent=`${done}/${total}`; document.querySelector("#success").textContent=b.succeeded||0; document.querySelector("#exercises").textContent=b.exercises||0; document.querySelector("#skipped").textContent=b.skipped||0; document.querySelector("#failed").textContent=b.failed||0; document.querySelector("#logs").textContent=(b.logs||[]).map(x=>`${new Date(x.at).toLocaleTimeString()}  ${x.text}`).join("\n"); }
-for(const action of ["pause","resume","cancel"]) document.querySelector(`#${action}`).onclick=async()=>{await send({type:"batchControl",action});refresh();};
-document.querySelector("#retryFailed").onclick=async()=>{const reply=await send({type:"batchControl",action:"retryFailed"});if(!reply?.ok)document.querySelector("#current").textContent=`无法重试：${reply?.error||"未知错误"}`;refresh();};
-async function refreshOllama(){const reply=await send({type:"ollamaStatus"}),s=reply?.result;if(!s)return;document.querySelector("#inference").textContent=s.activeRequests.length?`正在推理：${s.activeRequests.map(j=>`${j.model} · ${j.itemCount} 段 · ${duration(Date.now()-j.startedAt)}`).join("；")}`:`没有扩展发起的推理请求${s.lastInference?`；上次 ${s.lastInference.model} ${s.lastInference.status}`:""}`;document.querySelector("#models").replaceChildren(...s.loadedModels.map(m=>{const row=document.createElement("div");row.className="model";const info=document.createElement("span");info.textContent=`${m.name} · ${(m.size_vram/1024/1024/1024).toFixed(1)} GB · 驻留至 ${new Date(m.expires_at).toLocaleTimeString()}`;const button=document.createElement("button");button.textContent="卸载";button.onclick=async()=>{await send({type:"unloadModel",model:m.name});refreshOllama();};row.append(info,button);return row;}));}
-document.querySelector("#abortInference").onclick=async()=>{await send({type:"abortInference"});refreshOllama();};
-refresh();refreshOllama();setInterval(refresh,1000);setInterval(refreshOllama,1500);
+function duration(ms) { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m ${s % 60}s`; }
+function logText(logs) { return (logs || []).map((entry) => `${new Date(entry.at).toLocaleString()}  ${entry.text}`).join("\n"); }
+
+async function refresh() {
+  const reply = await send({ type: "batchStatus" }); const b = reply?.result; if (!b) return;
+  const discovering = b.phase === "overview" || b.phase === "discovery";
+  const total = discovering ? (b.chapters.length || 1) : (b.total || b.items?.length || 0);
+  const done = b.phase === "overview" ? 0 : discovering ? (b.chapterIndex || 0) : (b.completed || 0);
+  const names = { overview: "读取课程首页", discovery: "发现课程目录", translation: "翻译并整理课程", diagnostic: "任务已阻塞", complete: "任务完成" };
+  const terminal = ["complete", "cancelled", "blocked"].includes(b.status);
+  const elapsed = (terminal && b.finishedAt ? b.finishedAt : Date.now()) - b.startedAt;
+  document.querySelector("#phase").textContent = `${names[b.phase] || b.phase} · ${b.status} · ${terminal ? "总用时" : "已运行"} ${duration(elapsed)}`;
+  document.querySelector("#fill").style.width = `${total ? done / total * 100 : 0}%`;
+  document.querySelector("#current").textContent = b.error ? `问题：${b.error}` : `当前：${b.current || "—"}${b.nextAt > Date.now() ? ` · ${Math.ceil((b.nextAt - Date.now()) / 1000)} 秒后继续` : ""}`;
+  document.querySelector("#done").textContent = `${done}/${total}`;
+  document.querySelector("#success").textContent = b.succeeded || 0; document.querySelector("#exercises").textContent = b.exercises || 0;
+  document.querySelector("#skipped").textContent = b.skipped || 0; document.querySelector("#failed").textContent = b.failed || 0;
+  document.querySelector("#logs").textContent = logText(b.logs);
+}
+
+async function refreshHistory() {
+  const reply = await send({ type: "batchHistory" }); const history = reply?.result || []; const select = document.querySelector("#history");
+  const selected = select.value; select.replaceChildren(new Option("选择历史任务…", ""), ...history.map((task) => new Option(`${new Date(task.finishedAt).toLocaleString()} · ${task.status} · ${task.completed}/${task.total}`, task.id)));
+  if (history.some((task) => task.id === selected)) select.value = selected;
+  select.onchange = () => { const task = history.find((item) => item.id === select.value); document.querySelector("#historyLogs").textContent = task ? logText(task.logs) : ""; };
+}
+
+for (const action of ["pause", "resume", "cancel"]) document.querySelector(`#${action}`).onclick = async () => { await send({ type: "batchControl", action }); refresh(); refreshHistory(); };
+document.querySelector("#retryFailed").onclick = async () => { const reply = await send({ type: "batchControl", action: "retryFailed" }); if (!reply?.ok) document.querySelector("#current").textContent = `无法重试：${reply?.error || "未知错误"}`; refresh(); };
+async function refreshOllama() { const reply = await send({ type: "ollamaStatus" }), s = reply?.result; if (!s) return; document.querySelector("#inference").textContent = s.activeRequests.length ? `正在推理：${s.activeRequests.map((j) => `${j.model} · ${j.itemCount} 段 · ${duration(Date.now() - j.startedAt)}`).join("；")}` : `没有扩展发起的推理请求${s.lastInference ? `；上次 ${s.lastInference.model} ${s.lastInference.status}` : ""}`; document.querySelector("#models").replaceChildren(...s.loadedModels.map((m) => { const row = document.createElement("div"); row.className = "model"; const info = document.createElement("span"); info.textContent = `${m.name} · ${(m.size_vram / 1024 / 1024 / 1024).toFixed(1)} GB · 驻留至 ${new Date(m.expires_at).toLocaleTimeString()}`; const button = document.createElement("button"); button.textContent = "卸载"; button.onclick = async () => { await send({ type: "unloadModel", model: m.name }); refreshOllama(); }; row.append(info, button); return row; })); }
+document.querySelector("#abortInference").onclick = async () => { await send({ type: "abortInference" }); refreshOllama(); };
+refresh(); refreshHistory(); refreshOllama(); setInterval(refresh, 1000); setInterval(refreshHistory, 10000); setInterval(refreshOllama, 1500);

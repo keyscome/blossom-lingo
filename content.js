@@ -1,4 +1,4 @@
-const CONTENT_VERSION = "1.0.4";
+const CONTENT_VERSION = "1.0.5";
 const STATE = { running: false, enabled: false, mode: "bilingual", abort: 0, lastUrl: location.href, rerunTimer: 0 };
 const SKIP = "pre, code, kbd, samp, script, style, textarea, input, select, button, nav, header, footer, [contenteditable='true'], [class*='monaco'], [class*='CodeMirror'], .llt-translation";
 const BLOCKS = "h1, h2, h3, h4, p, li, blockquote, figcaption, td, th";
