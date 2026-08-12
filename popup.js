@@ -39,4 +39,20 @@ document.querySelector("#openProgress").onclick=()=>chrome.runtime.sendMessage({
 function refreshBatchStatus(){chrome.runtime.sendMessage({type:"batchStatus"},(reply)=>{const b=reply?.result;if(!b)return;status.textContent=`${b.status} · ${b.phase} · ${b.completed||0}/${b.total||0} · ${b.current||""}`;});}
 refreshBatchStatus(); setInterval(refreshBatchStatus,1000);
 document.querySelector("#exportCurrent").onclick = () => sendToPage({ type: "exportCurrent" }).then(() => window.close()).catch((e) => status.textContent = e.message);
-document.querySelector("#exportLibrary").onclick = () => sendToPage({ type: "exportLibrary" }).then(() => window.close()).catch((e) => status.textContent = e.message);
+document.querySelector("#exportLibrary").onclick = async () => {
+  const button = document.querySelector("#exportLibrary");
+  try {
+    button.disabled = true; status.textContent = "正在整理浏览器中的课程归档…";
+    const current = await tab();
+    if (!current?.url?.startsWith("https://leetcode.com/explore/")) throw new Error("请先打开任意 LeetCode Explore 页面");
+    await ensurePageReady(current);
+    const reply = await chrome.tabs.sendMessage(current.id, { type: "exportLibraryRequest" });
+    if (!reply?.ok) throw new Error(reply?.error || "导出命令没有返回结果");
+    const result = reply.result;
+    status.textContent = `已生成 ${result.pageCount} 篇讲义：${result.markdownName} 和 ${result.htmlName}`;
+  } catch (error) {
+    status.textContent = `导出失败：${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+};

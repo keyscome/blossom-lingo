@@ -1,4 +1,4 @@
-const CONTENT_VERSION = "1.0.2";
+const CONTENT_VERSION = "1.0.3";
 const STATE = { running: false, enabled: false, mode: "bilingual", abort: 0, lastUrl: location.href, rerunTimer: 0 };
 const SKIP = "pre, code, kbd, samp, script, style, textarea, input, select, button, nav, header, footer, [contenteditable='true'], [class*='monaco'], [class*='CodeMirror'], .llt-translation";
 const BLOCKS = "h1, h2, h3, h4, p, li, blockquote, figcaption, td, th";
@@ -253,9 +253,13 @@ async function exportLibrary() {
   const css = `@page{size:A4;margin:17mm 16mm 19mm}*{box-sizing:border-box}html{scroll-behavior:smooth}body{font:16px/1.75 -apple-system,BlinkMacSystemFont,"Noto Sans CJK SC","PingFang SC",sans-serif;max-width:980px;margin:auto;padding:0 32px;color:#202124;background:#f5f2ec}.cover,.toc,.chapter-page{background:#fff;padding:58px 64px;margin:28px 0;border-radius:18px;box-shadow:0 8px 35px #27231c14}.cover{min-height:82vh;display:grid;align-content:center;break-after:page}.brand,.section-label,.article-kicker{font:700 12px/1.2 system-ui;letter-spacing:.18em;color:#b86400}.cover h1{font-size:3.2rem;line-height:1.1;max-width:700px;margin:.3em 0}.cover .subtitle{font-size:1.25rem;color:#68625b}.cover .meta{margin-top:5em;border:0}.toc{break-after:page}.legend{display:flex;gap:1.4em;color:#777;font-size:.85rem}.toc-chapter{margin:2em 0}.toc-chapter h2{display:flex;gap:.8em;border-bottom:1px solid #e7e0d6;padding-bottom:.35em}.toc-chapter h2 span{color:#c97813}.toc ol{list-style:none;padding:0}.toc li{display:flex;gap:.6em;padding:.28em 0}.toc li a,.toc li{color:#34312d;text-decoration:none}.toc li a{display:flex;gap:.6em;width:100%}.toc li b{color:#b86400}.toc small{margin-left:auto;color:#918a82}.missing{color:#999!important}.chapter-page{break-before:page}.chapter-page main>h1{font-size:2.15rem;line-height:1.2}.meta{font-size:.78rem;color:#817a72;border-bottom:1px solid #e7e0d6;padding-bottom:16px}.pair{margin:1.7em 0}.original{color:#555}.translation{margin-top:.65em;padding:.85em 1.1em;border-left:3px solid #d98300;background:#fff8ed;border-radius:0 8px 8px 0}code{font-family:"SFMono-Regular",Consolas,monospace;background:#f3f4f6;padding:.08em .28em;border-radius:4px}pre{white-space:pre-wrap;background:#f5f5f5;padding:1em}.back{display:inline-block;margin-top:2em;color:#a85d00;text-decoration:none}img,svg{max-width:100%}@media(max-width:700px){body{padding:0}.cover,.toc,.chapter-page{border-radius:0;margin:0;padding:30px 24px}.cover h1{font-size:2.3rem}.legend{display:block}}@media print{body{margin:0;padding:0;background:#fff;font-size:10.5pt}.cover,.toc,.chapter-page{box-shadow:none;border-radius:0;margin:0;padding:0}.cover{min-height:90vh}.pair{break-inside:auto}.translation,pre,blockquote,table{break-inside:avoid}.back{display:none}a{color:inherit}.toc a[href^="http"]:after{content:" ↗"}}`;
   const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title><style>${css}</style></head><body><header class="cover"><div class="brand">BLOSSOM LINGO</div><h1>${title}</h1><p class="subtitle">中英双语课程讲义</p><p class="meta">本地模型翻译 · 个人学习归档<br>${new Date().toLocaleDateString()}</p></header>${tocHtml}${articles}</body></html>`;
   const baseName = safeName(course?.title || "leetcode-explore");
-  downloadText(`${baseName}-bilingual.md`, md, "text/markdown;charset=utf-8");
-  downloadText(`${baseName}-bilingual.html`, html, "text/html;charset=utf-8");
+  const markdownName = `${baseName}-bilingual.md`;
+  const htmlName = `${baseName}-bilingual.html`;
+  downloadText(markdownName, md, "text/markdown;charset=utf-8");
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  downloadText(htmlName, html, "text/html;charset=utf-8");
   progress(`已导出 ${pages.length} 个已访问章节`, "done");
+  return { pageCount: pages.length, markdownName, htmlName };
 }
 
 function batches(entries, maxChars = 5500, maxItems = 12) {
@@ -354,6 +358,11 @@ function handleCommand(message) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+  if (message.type === "exportLibraryRequest") {
+    if (window.top !== window) return false;
+    exportLibrary().then((result) => respond({ ok: true, result })).catch((error) => respond({ ok: false, error: error.message }));
+    return true;
+  }
   handleCommand(message);
   if (message.type === "status") respond({ version: CONTENT_VERSION, count: document.querySelectorAll(".llt-translation").length, running: STATE.running });
   return false;
