@@ -187,6 +187,30 @@ async function putBatch(batch) {
 }
 function batchLog(batch, text) { batch.logs = [...(batch.logs || []), { at: Date.now(), text }].slice(-80); }
 function cleanUrl(value) { const url = new URL(value); url.searchParams.delete("iframe"); url.hash = ""; return url.href; }
+function courseIdFromUrl(value) { return cleanUrl(value).match(/\/explore\/featured\/card\/[^/]+\/(\d+)\//)?.[1] || "unknown"; }
+
+async function saveCourseCatalog(batch) {
+  const courseId = courseIdFromUrl(batch.courseUrl);
+  const scannedChapters = batch.chapters.map((chapter) => ({
+    id: `${courseId}:chapter:${chapter.order}`, order: chapter.order, title: chapter.title, url: chapter.url,
+    items: batch.items.filter((item) => item.chapterOrder === chapter.order).map((item) => ({
+      id: item.id, order: item.order, title: item.title, url: item.url,
+      type: item.status === "exercise" ? "Exercise" : item.type || "Item",
+    })),
+  }));
+  const key = `llt:course:${courseId}`;
+  const old = (await chrome.storage.local.get(key))[key] || {};
+  const oldChapters = new Map((old.chapters || []).map((chapter) => [chapter.title, chapter]));
+  const chapters = scannedChapters.map((chapter) => {
+    const previous = oldChapters.get(chapter.title);
+    const itemMap = new Map((previous?.items || []).map((item) => [item.id, item]));
+    for (const item of chapter.items) itemMap.set(item.id, { ...itemMap.get(item.id), ...item });
+    return { ...previous, ...chapter, items: [...itemMap.values()].sort((a, b) => a.order - b.order) };
+  });
+  const slug = cleanUrl(batch.courseUrl).match(/\/explore\/featured\/card\/([^/]+)\//)?.[1] || "leetcode-explore";
+  const inferredTitle = slug.split("-").map((word) => word ? word[0].toUpperCase() + word.slice(1) : "").join(" ");
+  await chrome.storage.local.set({ [key]: { ...old, courseId, slug, title: old.title || inferredTitle, chapters, updatedAt: Date.now() } });
+}
 
 async function navigateBatch(batch, url, delayMs) {
   clearTimeout(batchTimer);
@@ -214,7 +238,7 @@ async function startBatch(message) {
   if (["running", "paused", "blocked"].includes(existing?.status)) { await openProgress(); return existing; }
   const tab = await chrome.tabs.create({ url: message.courseUrl, active: false });
   if (message.model) await chrome.storage.sync.set({ model: message.model });
-  const batch = { version: 2, status: "running", phase: "overview", courseUrl: cleanUrl(message.courseUrl), tabId: tab.id, model: message.model || (await settings()).model, maxItems: Math.max(0, Number(message.maxItems || 0)), intervalMs: Math.max(3000, Number(message.intervalSeconds || 8) * 1000), startedAt: Date.now(), chapters: [], items: [], completed: 0, succeeded: 0, skipped: 0, failed: 0, current: "读取课程目录", retries: {}, logs: [] };
+  const batch = { version: 3, status: "running", phase: "overview", courseUrl: cleanUrl(message.courseUrl), tabId: tab.id, model: message.model || (await settings()).model, maxItems: Math.max(0, Number(message.maxItems || 0)), intervalMs: Math.max(3000, Number(message.intervalSeconds || 8) * 1000), startedAt: Date.now(), chapters: [], items: [], completed: 0, succeeded: 0, exercises: 0, skipped: 0, failed: 0, current: "读取课程目录", retries: {}, logs: [] };
   batchLog(batch, "任务已启动，正在读取课程首页"); await putBatch(batch);
   await openProgress();
   return batch;
@@ -257,7 +281,7 @@ async function onBatchFrameReady(message, sender) {
       batch.items.sort((a,b) => a.chapterOrder-b.chapterOrder || a.order-b.order); if (batch.maxItems) batch.items = batch.items.slice(0, batch.maxItems);
       if (!batch.items.length) { batch.status = "blocked"; batch.phase = "diagnostic"; batch.current = "未发现课程条目"; batch.error = "目录 iframe 已加载，但没有发现任何课程条目。任务已停止，没有执行翻译。"; batchLog(batch, batch.error); await putBatch(batch); return batch; }
       batch.phase = "translation"; batch.itemIndex = 0; batch.total = batch.items.length; batch.current = batch.items[0].title;
-      batchLog(batch, `目录完成，共 ${batch.total} 个条目`); await putBatch(batch);
+      batchLog(batch, `目录完成，共 ${batch.total} 个条目`); await saveCourseCatalog(batch); await putBatch(batch);
       if (batch.items[0]) await navigateBatch(batch, batch.items[0].url, batch.intervalMs); else { batch.status = "complete"; await putBatch(batch); }
     }
     return batch;
@@ -273,7 +297,7 @@ async function onBatchFrameReady(message, sender) {
       clearTimeout(articleTimer);
       articleTimer = setTimeout(async () => {
         const latest = await getBatch(); const current = latest?.items?.[latest.itemIndex];
-        if (latest?.status === "running" && current?.id === item.id && current.status === "pending") await onBatchItemDone({ itemId: item.id, status: "skipped", error: "页面不含可归档文章正文" }, { tab: { id: latest.tabId } });
+        if (latest?.status === "running" && current?.id === item.id && current.status === "pending") await onBatchItemDone({ itemId: item.id, status: "exercise", error: "练习题页面：不含课程讲义正文，已保留原始链接" }, { tab: { id: latest.tabId } });
       }, 6000);
     }
   }
@@ -289,11 +313,12 @@ async function onBatchItemDone(message, sender) {
     if (attempts <= 2) { item.status = "pending"; batchLog(batch, `重试 ${attempts}/2：${item.title} — ${message.error || "未知错误"}`); await putBatch(batch); await navigateBatch(batch, item.url, batch.intervalMs); return batch; }
   }
   item.status = message.status; item.finishedAt = Date.now(); item.error = message.error || ""; batch.completed++;
-  if (message.status === "succeeded") batch.succeeded++; else if (message.status === "skipped") batch.skipped++; else batch.failed++;
-  batchLog(batch, `${message.status === "succeeded" ? "完成" : message.status === "skipped" ? "跳过" : "失败"}：${item.title}${message.error ? ` — ${message.error}` : ""}`);
+  if (message.status === "succeeded") batch.succeeded++; else if (message.status === "exercise") batch.exercises++; else if (message.status === "skipped") batch.skipped++; else batch.failed++;
+  batchLog(batch, `${message.status === "succeeded" ? "完成" : message.status === "exercise" ? "练习题" : message.status === "skipped" ? "跳过" : "失败"}：${item.title}${message.error ? ` — ${message.error}` : ""}`);
+  await saveCourseCatalog(batch);
   batch.itemIndex++;
   while (batch.items[batch.itemIndex] && batch.items[batch.itemIndex].status !== "pending") batch.itemIndex++;
-  if (batch.itemIndex >= batch.items.length) { batch.status = "complete"; batch.phase = "complete"; batch.current = "全部完成"; batch.finishedAt = Date.now(); batchLog(batch, `任务完成：成功 ${batch.succeeded}，跳过 ${batch.skipped}，失败 ${batch.failed}`); await putBatch(batch); return batch; }
+  if (batch.itemIndex >= batch.items.length) { batch.status = "complete"; batch.phase = "complete"; batch.current = "全部完成"; batch.finishedAt = Date.now(); batchLog(batch, `任务完成：讲义 ${batch.succeeded}，练习题 ${batch.exercises || 0}，跳过 ${batch.skipped}，失败 ${batch.failed}`); await putBatch(batch); return batch; }
   batch.current = batch.items[batch.itemIndex].title; await putBatch(batch); await navigateBatch(batch, batch.items[batch.itemIndex].url, batch.intervalMs); return batch;
 }
 
@@ -301,7 +326,7 @@ async function controlBatch(message) {
   const batch = await getBatch(); if (!batch) throw new Error("没有批处理任务");
   if (message.action === "pause") { const aborted = abortActiveRequests(); batch.status = "paused"; clearTimeout(batchTimer); batchLog(batch, `任务已暂停${aborted ? `，已中断 ${aborted} 个推理请求` : ""}`); }
   if (message.action === "resume") { batch.status = "running"; batchLog(batch, "任务继续"); const url = batch.phase === "discovery" ? batch.chapters[batch.chapterIndex]?.url : batch.items[batch.itemIndex]?.url; await putBatch(batch); if (url) await navigateBatch(batch, url, 500); return batch; }
-  if (message.action === "cancel") { const aborted = abortActiveRequests(); batch.status = "cancelled"; batch.finishedAt = Date.now(); clearTimeout(batchTimer); batchLog(batch, `任务已取消${aborted ? `，已中断 ${aborted} 个推理请求` : ""}；已完成归档仍然保留`); }
+  if (message.action === "cancel") { const aborted = abortActiveRequests(); batch.status = "cancelled"; batch.finishedAt = Date.now(); clearTimeout(batchTimer); batchLog(batch, `任务已取消${aborted ? "，当前未完成批次未缓存" : ""}；此前完成的段落缓存、文章归档和课程目录均保留`); }
   await putBatch(batch); return batch;
 }
 

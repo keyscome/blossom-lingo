@@ -1,4 +1,4 @@
-const CONTENT_VERSION = "0.8.0";
+const CONTENT_VERSION = "1.0.0";
 const STATE = { running: false, enabled: false, mode: "bilingual", abort: 0, lastUrl: location.href, rerunTimer: 0 };
 const SKIP = "pre, code, kbd, samp, script, style, textarea, input, select, button, nav, header, footer, [contenteditable='true'], [class*='monaco'], [class*='CodeMirror'], .llt-translation";
 const BLOCKS = "h1, h2, h3, h4, p, li, blockquote, figcaption, td, th";
@@ -197,6 +197,8 @@ function buildArchive() {
 }
 
 function safeName(value) { return value.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().slice(0, 100) || "leetcode-explore"; }
+function escapeHtml(value) { return String(value || "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
+function anchorId(prefix, value) { return `${prefix}-${String(value || "item").replace(/[^a-zA-Z0-9_-]+/g, "-")}`; }
 
 function downloadText(filename, content, type) {
   const url = URL.createObjectURL(new Blob([content], { type }));
@@ -226,16 +228,26 @@ async function exportLibrary() {
   if (!pages.length) throw new Error("归档为空；先翻译并保存至少一个章节");
   const course = Object.entries(stored).find(([key]) => key.startsWith("llt:course:"))?.[1];
   const pageById = new Map(pages.map((page) => [page.id, page]));
-  const tocMd = course ? ["# 课程目录", "", ...course.chapters.flatMap((chapter) => [`## ${chapter.title}`, "", ...chapter.items.map((item) => `- ${pageById.has(item.id) ? "[已归档]" : "[未归档]"} ${item.title}`), ""])] : [];
+  const isExercise = (item) => item.type === "Exercise";
+  const tocMd = course ? ["# 课程目录", "", "> ✓ 双语讲义　↗ 练习题链接　○ 尚未归档", "", ...course.chapters.flatMap((chapter, chapterIndex) => [`## ${chapterIndex + 1}. ${chapter.title}`, "", ...chapter.items.map((item, itemIndex) => {
+    const number = `${chapterIndex + 1}.${itemIndex + 1}`;
+    if (pageById.has(item.id)) return `- ✓ [${number} ${item.title}](#${anchorId("article", item.id)})`;
+    if (isExercise(item)) return `- ↗ [${number} ${item.title}](${item.url}) — 练习题`;
+    return `- ○ ${number} ${item.title} — 尚未归档`;
+  }), ""])] : [];
   const ordered = course ? course.chapters.flatMap((chapter) => chapter.items.map((item) => pageById.get(item.id)).filter(Boolean)) : pages;
   const extras = pages.filter((page) => !ordered.some((orderedPage) => orderedPage.id === page.id));
   const finalPages = [...ordered, ...extras];
-  const md = [...tocMd, ...finalPages.map((page) => page.markdown)].join("\n\n---\n\n");
-  const tocHtml = course ? `<nav><h1>课程目录</h1>${course.chapters.map((chapter) => `<h2>${chapter.title}</h2><ul>${chapter.items.map((item) => `<li>${pageById.has(item.id) ? "✓" : "○"} ${item.title}</li>`).join("")}</ul>`).join("")}</nav><div style="break-before:page"></div>` : "";
-  const body = tocHtml + finalPages.map((page) => page.html.match(/<body>([\s\S]*)<\/body>/)?.[1] || "").join('<div style="break-before:page"></div>');
-  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>LeetCode Explore 双语讲义</title><style>@page{size:A4;margin:18mm 16mm 20mm}*{box-sizing:border-box}body{font:16px/1.75 -apple-system,BlinkMacSystemFont,"Noto Sans CJK SC","PingFang SC",sans-serif;max-width:920px;margin:42px auto;padding:0 28px;color:#202124}.cover{min-height:75vh;display:grid;place-content:center;text-align:center;break-after:page}.cover h1{font-size:2.6rem}.cover p{color:#777}nav{break-after:page}nav h2{margin-top:1.4em}nav li{margin:.35em 0}.translation{margin:.65em 0 1.5em;padding:.8em 1.05em;border-left:3px solid #d98300;background:#fff8ed}code{font-family:"SFMono-Regular",Consolas,monospace;background:#f3f4f6;padding:.08em .28em;border-radius:4px}pre{white-space:pre-wrap;background:#f5f5f5;padding:1em}.pair{break-inside:auto}img,svg{max-width:100%}@media print{body{margin:0;padding:0;font-size:10.5pt}.translation,pre,blockquote,table{break-inside:avoid}}</style></head><body><header class="cover"><div><h1>LeetCode Explore 双语讲义</h1><p>本地模型翻译 · 个人学习归档</p><p>${new Date().toLocaleDateString()}</p></div></header>${body}</body></html>`;
-  downloadText("leetcode-explore-archive.md", md, "text/markdown;charset=utf-8");
-  downloadText("leetcode-explore-archive.html", html, "text/html;charset=utf-8");
+  const mdArticles = finalPages.map((page) => `<a id="${anchorId("article", page.id)}"></a>\n\n${page.markdown}\n\n[↑ 返回课程目录](#课程目录)`);
+  const md = [...tocMd, ...mdArticles].join("\n\n---\n\n");
+  const tocHtml = course ? `<nav id="toc" class="toc"><div class="section-label">CONTENTS</div><h1>课程目录</h1><p class="legend"><span>✓ 双语讲义</span><span>↗ 练习题链接</span><span>○ 尚未归档</span></p>${course.chapters.map((chapter, chapterIndex) => `<section class="toc-chapter"><h2><span>${String(chapterIndex + 1).padStart(2, "0")}</span>${escapeHtml(chapter.title)}</h2><ol>${chapter.items.map((item, itemIndex) => { const number = `${chapterIndex + 1}.${itemIndex + 1}`; if (pageById.has(item.id)) return `<li class="ready"><a href="#${anchorId("article", item.id)}"><b>✓</b><span>${number} ${escapeHtml(item.title)}</span></a></li>`; if (isExercise(item)) return `<li class="exercise"><a href="${escapeHtml(item.url)}"><b>↗</b><span>${number} ${escapeHtml(item.title)}</span><small>练习题</small></a></li>`; return `<li class="missing"><b>○</b><span>${number} ${escapeHtml(item.title)}</span><small>尚未归档</small></li>`; }).join("")}</ol></section>`).join("")}</nav>` : "";
+  const articles = finalPages.map((page, index) => { const main = page.html.match(/<main>([\s\S]*)<\/main>/)?.[1] || page.html.match(/<body>([\s\S]*)<\/body>/)?.[1] || ""; return `<article class="chapter-page" id="${anchorId("article", page.id)}"><div class="article-kicker">LESSON ${String(index + 1).padStart(2, "0")}</div>${main}<a class="back" href="#toc">↑ 返回课程目录</a></article>`; }).join("");
+  const title = escapeHtml(course?.title && course.title !== "LeetCode Explore" ? course.title : "LeetCode Explore 双语讲义");
+  const css = `@page{size:A4;margin:17mm 16mm 19mm}*{box-sizing:border-box}html{scroll-behavior:smooth}body{font:16px/1.75 -apple-system,BlinkMacSystemFont,"Noto Sans CJK SC","PingFang SC",sans-serif;max-width:980px;margin:auto;padding:0 32px;color:#202124;background:#f5f2ec}.cover,.toc,.chapter-page{background:#fff;padding:58px 64px;margin:28px 0;border-radius:18px;box-shadow:0 8px 35px #27231c14}.cover{min-height:82vh;display:grid;align-content:center;break-after:page}.brand,.section-label,.article-kicker{font:700 12px/1.2 system-ui;letter-spacing:.18em;color:#b86400}.cover h1{font-size:3.2rem;line-height:1.1;max-width:700px;margin:.3em 0}.cover .subtitle{font-size:1.25rem;color:#68625b}.cover .meta{margin-top:5em;border:0}.toc{break-after:page}.legend{display:flex;gap:1.4em;color:#777;font-size:.85rem}.toc-chapter{margin:2em 0}.toc-chapter h2{display:flex;gap:.8em;border-bottom:1px solid #e7e0d6;padding-bottom:.35em}.toc-chapter h2 span{color:#c97813}.toc ol{list-style:none;padding:0}.toc li{display:flex;gap:.6em;padding:.28em 0}.toc li a,.toc li{color:#34312d;text-decoration:none}.toc li a{display:flex;gap:.6em;width:100%}.toc li b{color:#b86400}.toc small{margin-left:auto;color:#918a82}.missing{color:#999!important}.chapter-page{break-before:page}.chapter-page main>h1{font-size:2.15rem;line-height:1.2}.meta{font-size:.78rem;color:#817a72;border-bottom:1px solid #e7e0d6;padding-bottom:16px}.pair{margin:1.7em 0}.original{color:#555}.translation{margin-top:.65em;padding:.85em 1.1em;border-left:3px solid #d98300;background:#fff8ed;border-radius:0 8px 8px 0}code{font-family:"SFMono-Regular",Consolas,monospace;background:#f3f4f6;padding:.08em .28em;border-radius:4px}pre{white-space:pre-wrap;background:#f5f5f5;padding:1em}.back{display:inline-block;margin-top:2em;color:#a85d00;text-decoration:none}img,svg{max-width:100%}@media(max-width:700px){body{padding:0}.cover,.toc,.chapter-page{border-radius:0;margin:0;padding:30px 24px}.cover h1{font-size:2.3rem}.legend{display:block}}@media print{body{margin:0;padding:0;background:#fff;font-size:10.5pt}.cover,.toc,.chapter-page{box-shadow:none;border-radius:0;margin:0;padding:0}.cover{min-height:90vh}.pair{break-inside:auto}.translation,pre,blockquote,table{break-inside:avoid}.back{display:none}a{color:inherit}.toc a[href^="http"]:after{content:" ↗"}}`;
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title><style>${css}</style></head><body><header class="cover"><div class="brand">BLOSSOM LINGO</div><h1>${title}</h1><p class="subtitle">中英双语课程讲义</p><p class="meta">本地模型翻译 · 个人学习归档<br>${new Date().toLocaleDateString()}</p></header>${tocHtml}${articles}</body></html>`;
+  const baseName = safeName(course?.title || "leetcode-explore");
+  downloadText(`${baseName}-bilingual.md`, md, "text/markdown;charset=utf-8");
+  downloadText(`${baseName}-bilingual.html`, html, "text/html;charset=utf-8");
   progress(`已导出 ${pages.length} 个已访问章节`, "done");
 }
 
