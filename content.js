@@ -1,4 +1,4 @@
-const CONTENT_VERSION = "1.0.0";
+const CONTENT_VERSION = "1.0.1";
 const STATE = { running: false, enabled: false, mode: "bilingual", abort: 0, lastUrl: location.href, rerunTimer: 0 };
 const SKIP = "pre, code, kbd, samp, script, style, textarea, input, select, button, nav, header, footer, [contenteditable='true'], [class*='monaco'], [class*='CodeMirror'], .llt-translation";
 const BLOCKS = "h1, h2, h3, h4, p, li, blockquote, figcaption, td, th";
@@ -141,7 +141,10 @@ function currentChapterItems() {
 }
 
 function announceBatchFrame() {
-  const chapterLinks = overviewChapterLinks(); const itemLinks = currentChapterItems(); const articleReady = isArticleFrame();
+  const chapterLinks = overviewChapterLinks(); const itemLinks = currentChapterItems();
+  // LeetCode can mount the article shell several seconds before quiz content.
+  // Do not announce an article until it contains at least one eligible block.
+  const articleReady = isArticleFrame() && collect().length > 0;
   const frameKind = itemLinks.length ? "chapter" : chapterLinks.length ? "overview" : articleReady ? "article" : "irrelevant";
   if (frameKind === "irrelevant") return false;
   chrome.runtime.sendMessage({ type: "batchFrameReady", frameKind, url: canonicalUrl(), chapterLinks, itemLinks, articleReady }).catch(() => {});
@@ -371,5 +374,5 @@ new MutationObserver((mutations) => {
 let batchAnnounceAttempts = 0;
 const batchAnnounceTimer = setInterval(() => {
   batchAnnounceAttempts++;
-  if (announceBatchFrame() || batchAnnounceAttempts >= 20) clearInterval(batchAnnounceTimer);
+  if (announceBatchFrame() || batchAnnounceAttempts >= 60) clearInterval(batchAnnounceTimer);
 }, 500);

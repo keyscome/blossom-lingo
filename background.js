@@ -295,10 +295,14 @@ async function onBatchFrameReady(message, sender) {
     const item = batch.items[batch.itemIndex];
     if (item && pageUrl === cleanUrl(item.url) && item.status === "pending") {
       clearTimeout(articleTimer);
+      // Normal problem links can be classified quickly. Quizzes sometimes
+      // render their article content late, so give them the full readiness
+      // window before deciding that they are link-only entries.
+      const readinessMs = /\bquiz\b/i.test(item.title) ? 30000 : 6000;
       articleTimer = setTimeout(async () => {
         const latest = await getBatch(); const current = latest?.items?.[latest.itemIndex];
         if (latest?.status === "running" && current?.id === item.id && current.status === "pending") await onBatchItemDone({ itemId: item.id, status: "exercise", error: "练习题页面：不含课程讲义正文，已保留原始链接" }, { tab: { id: latest.tabId } });
-      }, 6000);
+      }, readinessMs);
     }
   }
   return batch;
@@ -327,6 +331,17 @@ async function controlBatch(message) {
   if (message.action === "pause") { const aborted = abortActiveRequests(); batch.status = "paused"; clearTimeout(batchTimer); batchLog(batch, `任务已暂停${aborted ? `，已中断 ${aborted} 个推理请求` : ""}`); }
   if (message.action === "resume") { batch.status = "running"; batchLog(batch, "任务继续"); const url = batch.phase === "discovery" ? batch.chapters[batch.chapterIndex]?.url : batch.items[batch.itemIndex]?.url; await putBatch(batch); if (url) await navigateBatch(batch, url, 500); return batch; }
   if (message.action === "cancel") { const aborted = abortActiveRequests(); batch.status = "cancelled"; batch.finishedAt = Date.now(); clearTimeout(batchTimer); batchLog(batch, `任务已取消${aborted ? "，当前未完成批次未缓存" : ""}；此前完成的段落缓存、文章归档和课程目录均保留`); }
+  if (message.action === "retryFailed") {
+    if (batch.status === "running") throw new Error("请先等待当前任务结束或将其取消");
+    const targets = (batch.items || []).filter((item) => item.status === "failed" || (item.status === "skipped" && /\bquiz\b/i.test(item.title)));
+    if (!targets.length) throw new Error("没有需要重试的失败项");
+    batch.items = targets.map((item) => ({ ...item, status: "pending", error: "" }));
+    batch.status = "running"; batch.phase = "translation"; batch.itemIndex = 0; batch.total = targets.length;
+    batch.completed = 0; batch.succeeded = 0; batch.exercises = 0; batch.skipped = 0; batch.failed = 0;
+    batch.retries = {}; batch.startedAt = Date.now(); batch.finishedAt = null; batch.error = ""; batch.current = batch.items[0].title;
+    batchLog(batch, `仅重试 ${targets.length} 个失败项；已完成讲义继续使用本地缓存`);
+    await putBatch(batch); await navigateBatch(batch, batch.items[0].url, 500); return batch;
+  }
   await putBatch(batch); return batch;
 }
 
