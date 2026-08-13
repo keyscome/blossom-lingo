@@ -2,6 +2,8 @@
 
 一个本地优先的 Chrome/Edge 扩展：翻译你当前有权访问的 LeetCode Explore 页面，并在原文下方显示译文。正文只发送到本机 Ollama，不经过第三方服务器。
 
+`1.3.0` 补全 DSA 课程内容：识别并翻译选择题题干与文本选项；适配 LeetCode CSS Modules 生成的 `question-desc__*` 题干容器，并从单选项组的上一层题目容器识别没有稳定 class 的题干，同时排除 “Multiple Choice Question” 标签。代码块不参与翻译，但按原语言和原始内容写入 Markdown fenced code block 与 HTML `<pre><code>`；图片、视频和 iframe 以逐项资源链接写入两种归档。折叠问答进一步兼容 Bootstrap、自定义 question title、accordion 和 spoiler 控件。
+
 `1.2.0` 支持课程正文中的折叠问答：翻译前会展开原生 `<details>` 以及通过 `aria-expanded`/`aria-controls` 标记的折叠面板，同时翻译问题标题和展开后的答案。Markdown 与 HTML 归档会把这些内容重新组织为可展开的双语 `<details>` 问答块；打印时默认保持展开，避免答案遗漏。
 
 `0.9.0` 起，通用模型通过 Ollama JSON Schema 结构化输出译文，并检查条目 ID 与完整性；若小模型仍生成损坏的 JSON，会自动降级为逐段纯文本翻译，不再让整篇文章因一个逗号或引号失败。
@@ -18,9 +20,9 @@
 
 `1.0.5` 修复任务结束后计时继续增长的问题，完成、取消和阻塞状态固定显示 `finishedAt - startedAt`。当前任务日志扩展到最近 200 条；终态任务自动生成不含课程正文的历史快照，保存在 `chrome.storage.local`，最多保留 20 个任务且不超过 30 天，可在进度页选择查看。
 
-`1.1.0` 引入多课程工作区：段落译文缓存继续跨课程共享，但文章归档使用“课程 slug + 文章 ID”隔离；目录、统计、历史和 Markdown/HTML 导出均限定为当前课程。一次只运行一个批任务，避免多个课程争抢 Ollama；切换课程时弹窗显示独立归档覆盖率。条目按 LeetCode 元数据区分 `Article`、`Problem` 和 `Quiz`，不再把 System Design 讲义误判为练习题。视频课程的文字和静态图示进入个人讲义，视频不复制，仅保留媒体提示与已购买课程的来源链接。
+`1.1.0` 引入多课程工作区：段落译文缓存继续跨课程共享，但文章归档使用“课程 slug + 文章 ID”隔离；目录、统计、历史和 Markdown/HTML 导出均限定为当前课程。一次只运行一个批任务，避免多个课程争抢 Ollama；切换课程时弹窗显示独立归档覆盖率。条目按 LeetCode 元数据区分 `Article`、`Problem` 和 `Quiz`，不再把 System Design 讲义误判为练习题。视频课程的文字会进入个人讲义，视频本身不会复制。
 
-多课程归档启用 `unlimitedStorage`，避免两门大型课程的逐篇归档与译文缓存触发 Chrome 普通本地配额。弹窗显示扩展本地数据总占用。静态图示在 HTML 中保留其在线资源地址；为防将来链接或权限变化，建议课程完成后联网打开 HTML，确认图片加载完成，再打印为 PDF 固化。HTML/Markdown/PDF 均只用于个人学习，不应重新发布课程内容。
+多课程归档启用 `unlimitedStorage`，避免两门大型课程的逐篇归档与译文缓存触发 Chrome 普通本地配额。弹窗显示扩展本地数据总占用。图片、视频和 iframe 以原始在线资源链接保存在 HTML/Markdown；链接仍受来源站点权限和有效期约束。HTML/Markdown/PDF 均只用于个人学习，不应重新发布课程内容。
 
 ## 边界
 
@@ -99,9 +101,9 @@ launchctl setenv OLLAMA_ORIGINS "chrome-extension://这里是设置页显示的�
 
 ## 3. 工作方式
 
-LeetCode Explore 会把文章放在同源 iframe 中。扩展注入所有 frame，但只有检测到 `.article-inner .block-markdown` 的文章 frame 才会工作；外层导航页面及文章内嵌的视频、代码编辑器 frame 会被忽略。它只处理标题、段落、列表、引用和表格单元格，并跳过：
+LeetCode Explore 会把文章放在同源 iframe 中。扩展注入所有 frame，但只有检测到 `.article-inner .block-markdown` 的文章 frame 才会工作；外层导航页面及文章内嵌的视频、代码编辑器 frame 不会作为独立文章处理。它翻译标题、段落、列表、引用、表格单元格、折叠问答和选择题文本，并将代码及媒体链接作为不翻译的静态内容归档。
 
-- `pre`、`code`、输入框和按钮；
+- `pre`、`code`（不翻译，但会原样归档）、输入框和操作按钮；
 - Monaco/CodeMirror 编辑器；
 - 页面导航、页头、页脚；
 - 可编辑区域和不可见内容。
