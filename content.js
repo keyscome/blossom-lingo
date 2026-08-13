@@ -29,8 +29,51 @@ function isEligible(element) {
   return rect.width > 0 && getComputedStyle(element).visibility !== "hidden";
 }
 
+function quizQuestionCandidates(root = rootNode()) {
+  const controls = [...root.querySelectorAll("input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox']")].filter((control) => !control.closest(".llt-translation"));
+  const scopes = new Set();
+  for (const control of controls) {
+    let scope = control.parentElement;
+    while (scope && scope !== root) {
+      const count = scope.querySelectorAll("input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox']").length;
+      if (count >= 2 && count <= 20) break;
+      scope = scope.parentElement;
+    }
+    if (scope) scopes.add(scope);
+  }
+  const prompts = [];
+  for (const scope of scopes) {
+    const firstControl = scope.querySelector("input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox']");
+    if (!firstControl) continue;
+    const candidates = [...scope.querySelectorAll("h1, h2, h3, h4, p, div, span")].filter((element) => {
+      if (element.closest(SKIP) || element.closest("label, [role='radio'], [role='checkbox']")) return false;
+      if (element.querySelector("input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox']")) return false;
+      if (!(element.compareDocumentPosition(firstControl) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+      const text = element.innerText.replace(/\s+/g, " ").trim();
+      if (text.length < 8 || text.length > 1200 || /^Multiple Choice Question$/i.test(text)) return false;
+      if ([...element.children].some((child) => child.matches("h1, h2, h3, h4, p, div, span") && child.innerText.trim().length >= 8)) return false;
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && getComputedStyle(element).visibility !== "hidden";
+    });
+    const prompt = candidates.sort((a, b) => {
+      const score = (element) => (/[?？]\s*$/.test(element.innerText.trim()) ? 2000 : 0) + Math.min(element.innerText.trim().length, 1000);
+      return score(b) - score(a);
+    })[0];
+    if (prompt) {
+      prompt.dataset.lltQuizPrompt = "1";
+      prompts.push(prompt);
+    }
+  }
+  return prompts;
+}
+
+function translatableBlocks(root = rootNode()) {
+  quizQuestionCandidates(root);
+  return [...root.querySelectorAll(`${BLOCKS}, [data-llt-quiz-prompt='1']`)];
+}
+
 function collect() {
-  return [...rootNode().querySelectorAll(BLOCKS)].filter(isEligible);
+  return translatableBlocks().filter(isEligible);
 }
 
 function disclosurePanel(control) {
@@ -303,7 +346,7 @@ function staticArchiveNodes(root, blocks) {
 function buildArchive() {
   const title = articleTitle();
   const info = courseInfo();
-  const blocks = [...rootNode().querySelectorAll(BLOCKS)].filter((element) => element.dataset.lltDone === "1");
+  const blocks = translatableBlocks().filter((element) => element.dataset.lltDone === "1");
   const archiveNodes = staticArchiveNodes(rootNode(), blocks);
   const markdown = [`# ${title}`, "", `> Source: ${canonicalUrl()}`, `> Saved: ${new Date().toISOString()}`, ""];
   const htmlBlocks = [];

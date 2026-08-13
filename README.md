@@ -2,7 +2,7 @@
 
 一个本地优先的 Chrome/Edge 扩展：翻译你当前有权访问的 LeetCode Explore 页面，并在原文下方显示译文。正文只发送到本机 Ollama，不经过第三方服务器。
 
-`1.3.0` 补全 DSA 课程内容：识别并翻译选择题题干与文本选项；代码块不参与翻译，但按原语言和原始内容写入 Markdown fenced code block 与 HTML `<pre><code>`；图片、视频和 iframe 以逐项资源链接写入两种归档。折叠问答进一步兼容 Bootstrap、自定义 question title、accordion 和 spoiler 控件。
+`1.3.0` 补全 DSA 课程内容：识别并翻译选择题题干与文本选项；对于没有稳定 class 的题干，会从第一组单选项之前的可见文本中识别问题，并排除 “Multiple Choice Question” 标签。代码块不参与翻译，但按原语言和原始内容写入 Markdown fenced code block 与 HTML `<pre><code>`；图片、视频和 iframe 以逐项资源链接写入两种归档。折叠问答进一步兼容 Bootstrap、自定义 question title、accordion 和 spoiler 控件。
 
 `1.2.0` 支持课程正文中的折叠问答：翻译前会展开原生 `<details>` 以及通过 `aria-expanded`/`aria-controls` 标记的折叠面板，同时翻译问题标题和展开后的答案。Markdown 与 HTML 归档会把这些内容重新组织为可展开的双语 `<details>` 问答块；打印时默认保持展开，避免答案遗漏。
 
