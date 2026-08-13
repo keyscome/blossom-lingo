@@ -3,7 +3,8 @@ const STATE = { running: false, enabled: false, mode: "bilingual", abort: 0, las
 const SKIP = "pre, code, kbd, samp, script, style, textarea, input, select, button, nav, header, footer, [contenteditable='true'], [class*='monaco'], [class*='CodeMirror'], .llt-translation";
 const DISCLOSURE_CONTROL = "summary, [aria-expanded], [data-toggle='collapse'], [data-bs-toggle='collapse'], .question-title, [class*='question-title'], .accordion-header, .spoiler-title";
 const QUIZ_BLOCKS = ".quiz-question, .question-content, [class*='quiz-question'], [class*='question-content'], .quiz-option, .option-content, [class*='option-content']";
-const BLOCKS = `h1, h2, h3, h4, p, li, blockquote, figcaption, td, th, label, [role='radio'], [role='checkbox'], ${QUIZ_BLOCKS}, ${DISCLOSURE_CONTROL}`;
+const QUIZ_PROMPTS = "[class^='question-desc__'] > :not([class^='mcq-label__']), [class*=' question-desc__'] > :not([class^='mcq-label__'])";
+const BLOCKS = `h1, h2, h3, h4, p, li, blockquote, figcaption, td, th, label, [role='radio'], [role='checkbox'], ${QUIZ_PROMPTS}, ${QUIZ_BLOCKS}, ${DISCLOSURE_CONTROL}`;
 const CODE_BLOCKS = "pre, .CodeMirror-code, .ace_content, .view-lines";
 const MEDIA_NODES = "img, video, iframe";
 const DISCLOSURE_PANELS = new WeakMap();
@@ -39,7 +40,7 @@ function quizQuestionCandidates(root = rootNode()) {
       if (count >= 2 && count <= 20) break;
       scope = scope.parentElement;
     }
-    if (scope) scopes.add(scope);
+    if (scope) scopes.add(scope.parentElement || scope);
   }
   const prompts = [];
   for (const scope of scopes) {
