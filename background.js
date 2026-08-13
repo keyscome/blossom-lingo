@@ -203,6 +203,26 @@ function batchLog(batch, text) { batch.logs = [...(batch.logs || []), { at: Date
 function cleanUrl(value) { const url = new URL(value); url.searchParams.delete("iframe"); url.hash = ""; return url.href; }
 function courseIdFromUrl(value) { return cleanUrl(value).match(/\/explore\/featured\/card\/([^/]+)\//)?.[1] || "unknown"; }
 function chapterIdFromUrl(value) { return cleanUrl(value).match(/\/explore\/featured\/card\/[^/]+\/(\d+)\//)?.[1] || null; }
+function isExerciseType(value) { return /^(problem|exercise|coding question)$/i.test(String(value || "").trim()); }
+function isExerciseItem(item) { return isExerciseType(item?.type); }
+
+async function startTranslationQueue(batch) {
+  let detectedExercises = 0;
+  for (const item of batch.items) {
+    if (item.status !== "pending" || !isExerciseItem(item)) continue;
+    item.type = "Exercise"; item.status = "exercise"; item.error = "在线练习题：已保留原始链接，不归档编辑器页面"; item.finishedAt = Date.now();
+    batch.completed++; batch.exercises++; detectedExercises++;
+  }
+  if (detectedExercises) batchLog(batch, `目录类型识别：${detectedExercises} 个 Coding Question 已归类为练习题，无需逐页等待`);
+  await saveCourseCatalog(batch);
+  batch.itemIndex = batch.items.findIndex((item) => item.status === "pending");
+  if (batch.itemIndex < 0) {
+    batch.status = "complete"; batch.phase = "complete"; batch.current = "全部完成"; batch.finishedAt = Date.now();
+    batchLog(batch, `任务完成：讲义 ${batch.succeeded}，练习题 ${batch.exercises || 0}，跳过 ${batch.skipped}，失败 ${batch.failed}`);
+    await putBatch(batch); return batch;
+  }
+  batch.current = batch.items[batch.itemIndex].title; await putBatch(batch); await navigateBatch(batch, batch.items[batch.itemIndex].url, batch.intervalMs); return batch;
+}
 
 async function saveCourseCatalog(batch) {
   const courseId = courseIdFromUrl(batch.courseUrl);
@@ -320,8 +340,7 @@ async function onBatchFrameReady(message, sender) {
       batch.items.sort((a,b) => a.chapterOrder-b.chapterOrder || a.order-b.order); if (batch.maxItems) batch.items = batch.items.slice(0, batch.maxItems);
       if (!batch.items.length) { batch.status = "blocked"; batch.phase = "diagnostic"; batch.current = "未发现课程条目"; batch.error = "目录 iframe 已加载，但没有发现任何课程条目。任务已停止，没有执行翻译。"; batchLog(batch, batch.error); await putBatch(batch); return batch; }
       batch.phase = "translation"; batch.itemIndex = 0; batch.total = batch.items.length; batch.current = batch.items[0].title;
-      batchLog(batch, `目录完成，共 ${batch.total} 个条目`); await saveCourseCatalog(batch); await putBatch(batch);
-      if (batch.items[0]) await navigateBatch(batch, batch.items[0].url, batch.intervalMs); else { batch.status = "complete"; await putBatch(batch); }
+      batchLog(batch, `目录完成，共 ${batch.total} 个条目`); await startTranslationQueue(batch);
     }
     return batch;
   }
@@ -335,7 +354,7 @@ async function onBatchFrameReady(message, sender) {
     if (item && pageUrl === cleanUrl(item.url) && item.status === "pending") {
       clearTimeout(articleTimer);
       const articleLike = /^(article|quiz)$/i.test(item.type || "") || /\bquiz\b/i.test(item.title);
-      const problemLike = /^(problem|exercise)$/i.test(item.type || "");
+      const problemLike = isExerciseItem(item);
       const readinessMs = articleLike ? 30000 : problemLike ? 6000 : 15000;
       articleTimer = setTimeout(async () => {
         const latest = await getBatch(); const current = latest?.items?.[latest.itemIndex];
@@ -377,15 +396,16 @@ async function controlBatch(message) {
   if (message.action === "cancel") { const aborted = abortActiveRequests(); batch.status = "cancelled"; batch.finishedAt = Date.now(); clearTimeout(batchTimer); batchLog(batch, `任务已取消${aborted ? "，当前未完成批次未缓存" : ""}；此前完成的段落缓存、文章归档和课程目录均保留`); }
   if (message.action === "retryFailed") {
     if (batch.status === "running") throw new Error("请先等待当前任务结束或将其取消");
-    const targets = (batch.items || []).filter((item) => item.status === "failed" || (item.status === "skipped" && /\bquiz\b/i.test(item.title)));
-    if (!targets.length) throw new Error("没有需要重试的失败项");
+    const targets = (batch.items || []).filter((item) => item.status === "failed" || (item.status === "skipped" && (/\bquiz\b/i.test(item.title) || isExerciseItem(item))));
+    if (!targets.length) throw new Error("没有需要修复的失败或误跳过项");
     batch.items = targets.map((item) => ({ ...item, status: "pending", error: "" }));
     batch.id = crypto.randomUUID(); batch.historyArchivedStatus = null;
     batch.status = "running"; batch.phase = "translation"; batch.itemIndex = 0; batch.total = targets.length;
     batch.completed = 0; batch.succeeded = 0; batch.exercises = 0; batch.skipped = 0; batch.failed = 0;
     batch.retries = {}; batch.startedAt = Date.now(); batch.finishedAt = null; batch.error = ""; batch.current = batch.items[0].title;
-    batchLog(batch, `仅重试 ${targets.length} 个失败项；已完成讲义继续使用本地缓存`);
-    await putBatch(batch); await navigateBatch(batch, batch.items[0].url, 500); return batch;
+    batchLog(batch, `修复 ${targets.length} 个失败或误跳过项；已完成讲义继续使用本地缓存`);
+    batch.intervalMs = Math.max(500, batch.intervalMs || 500);
+    return startTranslationQueue(batch);
   }
   await putBatch(batch); return batch;
 }

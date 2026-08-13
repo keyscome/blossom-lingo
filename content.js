@@ -1,4 +1,4 @@
-const CONTENT_VERSION = "1.3.2";
+const CONTENT_VERSION = "1.3.3";
 const STATE = { running: false, enabled: false, mode: "bilingual", abort: 0, lastUrl: location.href, rerunTimer: 0 };
 const SKIP = "pre, code, kbd, samp, script, style, textarea, input, select, button, nav, header, footer, [contenteditable='true'], [class*='monaco'], [class*='CodeMirror'], .llt-translation";
 const DISCLOSURE_CONTROL = "summary, [aria-expanded], [data-toggle='collapse'], [data-bs-toggle='collapse'], .question-title, [class*='question-title'], .accordion-header, .spoiler-title";
