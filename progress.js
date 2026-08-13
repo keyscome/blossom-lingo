@@ -2,6 +2,25 @@ function send(message) { return new Promise((resolve) => chrome.runtime.sendMess
 function duration(ms) { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m ${s % 60}s`; }
 function logText(logs) { return (logs || []).map((entry) => `${new Date(entry.at).toLocaleString()}  ${entry.text}`).join("\n"); }
 
+function syncCopyButton(buttonId, logId) {
+  document.querySelector(`#${buttonId}`).disabled = !document.querySelector(`#${logId}`).textContent.trim();
+}
+
+async function copyLogText(buttonId, logId) {
+  const button = document.querySelector(`#${buttonId}`);
+  const text = document.querySelector(`#${logId}`).textContent.trim();
+  if (!text) return;
+  const original = button.textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = "已复制";
+  } catch (error) {
+    console.error("[Blossom Lingo] Copy logs failed", error);
+    button.textContent = "复制失败";
+  }
+  setTimeout(() => { button.textContent = original; }, 1600);
+}
+
 async function refresh() {
   const reply = await send({ type: "batchStatus" }); const b = reply?.result; if (!b) return;
   const discovering = b.phase === "overview" || b.phase === "discovery";
@@ -17,17 +36,20 @@ async function refresh() {
   document.querySelector("#success").textContent = b.succeeded || 0; document.querySelector("#exercises").textContent = b.exercises || 0;
   document.querySelector("#skipped").textContent = b.skipped || 0; document.querySelector("#failed").textContent = b.failed || 0;
   document.querySelector("#logs").textContent = logText(b.logs);
+  syncCopyButton("copyLogs", "logs");
 }
 
 async function refreshHistory() {
   const reply = await send({ type: "batchHistory" }); const history = reply?.result || []; const select = document.querySelector("#history");
   const selected = select.value; select.replaceChildren(new Option("选择历史任务…", ""), ...history.map((task) => new Option(`${new Date(task.finishedAt).toLocaleString()} · ${task.courseId || "旧任务"} · ${task.status} · ${task.completed}/${task.total}`, task.id)));
   if (history.some((task) => task.id === selected)) select.value = selected;
-  select.onchange = () => { const task = history.find((item) => item.id === select.value); document.querySelector("#historyLogs").textContent = task ? logText(task.logs) : ""; };
+  select.onchange = () => { const task = history.find((item) => item.id === select.value); document.querySelector("#historyLogs").textContent = task ? logText(task.logs) : ""; syncCopyButton("copyHistoryLogs", "historyLogs"); };
 }
 
 for (const action of ["pause", "resume", "cancel"]) document.querySelector(`#${action}`).onclick = async () => { await send({ type: "batchControl", action }); refresh(); refreshHistory(); };
 document.querySelector("#retryFailed").onclick = async () => { const reply = await send({ type: "batchControl", action: "retryFailed" }); if (!reply?.ok) document.querySelector("#current").textContent = `无法重试：${reply?.error || "未知错误"}`; refresh(); };
 async function refreshOllama() { const reply = await send({ type: "ollamaStatus" }), s = reply?.result; if (!s) return; document.querySelector("#inference").textContent = s.activeRequests.length ? `正在推理：${s.activeRequests.map((j) => `${j.model} · ${j.itemCount} 段 · ${duration(Date.now() - j.startedAt)}`).join("；")}` : `没有扩展发起的推理请求${s.lastInference ? `；上次 ${s.lastInference.model} ${s.lastInference.status}` : ""}`; document.querySelector("#models").replaceChildren(...s.loadedModels.map((m) => { const row = document.createElement("div"); row.className = "model"; const info = document.createElement("span"); info.textContent = `${m.name} · ${(m.size_vram / 1024 / 1024 / 1024).toFixed(1)} GB · 驻留至 ${new Date(m.expires_at).toLocaleTimeString()}`; const button = document.createElement("button"); button.textContent = "卸载"; button.onclick = async () => { await send({ type: "unloadModel", model: m.name }); refreshOllama(); }; row.append(info, button); return row; })); }
 document.querySelector("#abortInference").onclick = async () => { await send({ type: "abortInference" }); refreshOllama(); };
+document.querySelector("#copyLogs").onclick = () => copyLogText("copyLogs", "logs");
+document.querySelector("#copyHistoryLogs").onclick = () => copyLogText("copyHistoryLogs", "historyLogs");
 refresh(); refreshHistory(); refreshOllama(); setInterval(refresh, 1000); setInterval(refreshHistory, 10000); setInterval(refreshOllama, 1500);
