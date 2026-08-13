@@ -52,7 +52,7 @@ document.querySelector("#exportLibrary").onclick = async () => {
     const reply = await chrome.tabs.sendMessage(current.id, { type: "exportLibraryRequest", courseId: currentCourseId });
     if (!reply?.ok) throw new Error(reply?.error || "导出命令没有返回结果");
     const result = reply.result;
-    status.textContent = `已生成 ${result.pageCount} 篇讲义：${result.markdownName} 和 ${result.htmlName}`;
+    status.textContent = `已生成 ${result.pageCount} 篇讲义、${result.exerciseCount || 0} 道练习题链接：${result.markdownName} 和 ${result.htmlName}`;
   } catch (error) {
     status.textContent = `导出失败：${error.message}`;
   } finally {
