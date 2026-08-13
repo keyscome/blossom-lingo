@@ -2,6 +2,8 @@
 
 一个本地优先的 Chrome/Edge 扩展：翻译你当前有权访问的 LeetCode Explore 页面，并在原文下方显示译文。正文只发送到本机 Ollama，不经过第三方服务器。
 
+`1.3.2` 在课程进度页为当前任务日志和历史任务日志增加一键复制按钮，复制带本地时间戳的完整纯文本日志，并显示复制结果。
+
 `1.3.1` 翻译每篇文章的标题，并将中文标题用于单篇及整课 Markdown/HTML 的主标题、目录、篇章导航和下载文件名；英文原标题作为副标题保留，方便核对。
 
 `1.3.0` 补全 DSA 课程内容：识别并翻译选择题题干与文本选项；适配 LeetCode CSS Modules 生成的 `question-desc__*` 题干容器，并从单选项组的上一层题目容器识别没有稳定 class 的题干，同时排除 “Multiple Choice Question” 标签。代码块不参与翻译，但按原语言和原始内容写入 Markdown fenced code block 与 HTML `<pre><code>`；图片、视频和 iframe 以逐项资源链接写入两种归档。折叠问答进一步兼容 Bootstrap、自定义 question title、accordion 和 spoiler 控件。
