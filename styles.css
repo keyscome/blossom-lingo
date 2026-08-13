@@ -10,6 +10,11 @@
   white-space: pre-wrap;
 }
 .llt-translation[data-llt-loading="true"] { opacity: 0.55; }
+.llt-title-translation {
+  margin: 0.35rem 0 0.85rem;
+  font-size: 1.2rem;
+  font-weight: 650;
+}
 .llt-original-hidden { display: none !important; }
 .llt-force-expanded {
   display: block !important;
