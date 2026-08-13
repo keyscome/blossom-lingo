@@ -11,6 +11,14 @@
 }
 .llt-translation[data-llt-loading="true"] { opacity: 0.55; }
 .llt-original-hidden { display: none !important; }
+.llt-force-expanded {
+  display: block !important;
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
 #llt-progress {
   position: fixed;
   right: 20px;

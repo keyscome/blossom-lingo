@@ -1,7 +1,7 @@
-const CONTENT_VERSION = "1.1.0";
+const CONTENT_VERSION = "1.2.0";
 const STATE = { running: false, enabled: false, mode: "bilingual", abort: 0, lastUrl: location.href, rerunTimer: 0 };
 const SKIP = "pre, code, kbd, samp, script, style, textarea, input, select, button, nav, header, footer, [contenteditable='true'], [class*='monaco'], [class*='CodeMirror'], .llt-translation";
-const BLOCKS = "h1, h2, h3, h4, p, li, blockquote, figcaption, td, th";
+const BLOCKS = "h1, h2, h3, h4, p, li, blockquote, figcaption, td, th, summary, [aria-expanded]";
 
 function rootNode() {
   const article = document.querySelector(".article-inner .block-markdown, .article-inner");
@@ -15,7 +15,8 @@ function isArticleFrame() {
 }
 
 function isEligible(element) {
-  if (element.closest(SKIP) || element.dataset.lltDone === "1") return false;
+  const isDisclosure = element.matches("summary, [aria-expanded]");
+  if ((!isDisclosure && element.closest(SKIP)) || element.dataset.lltDone === "1") return false;
   const text = element.innerText.trim();
   if (text.length < 2 || text.length > 6000) return false;
   if ([...element.children].some((child) => child.matches(BLOCKS))) return false;
@@ -25,6 +26,37 @@ function isEligible(element) {
 
 function collect() {
   return [...rootNode().querySelectorAll(BLOCKS)].filter(isEligible);
+}
+
+function disclosurePanel(control) {
+  const panelId = control.getAttribute("aria-controls");
+  if (panelId) return document.getElementById(panelId);
+  return control.nextElementSibling;
+}
+
+function disclosureControls(root = rootNode()) {
+  return [...root.querySelectorAll("[aria-expanded]")].filter((control) => {
+    const panel = disclosurePanel(control);
+    return panel && root.contains(panel) && (control.innerText || "").trim().length > 1;
+  });
+}
+
+async function expandCollapsedContent() {
+  const root = rootNode();
+  let changed = false;
+  for (const details of root.querySelectorAll("details:not([open])")) {
+    details.open = true;
+    changed = true;
+  }
+  for (const control of disclosureControls(root)) {
+    if (control.getAttribute("aria-expanded") !== "false") continue;
+    control.click();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    disclosurePanel(control)?.classList.add("llt-force-expanded");
+    changed = true;
+  }
+  if (changed) await new Promise((resolve) => setTimeout(resolve, 250));
+  return changed;
 }
 
 function protectedNodes(element) {
@@ -179,6 +211,40 @@ function markdownInline(node) {
   return clone.textContent.replace(/\s+/g, " ").trim();
 }
 
+function disclosureFor(element) {
+  const details = element.closest("details");
+  if (details && rootNode().contains(details)) return { key: details, control: details.querySelector(":scope > summary"), panel: details };
+  if (element.matches("[aria-expanded]")) {
+    const panel = disclosurePanel(element);
+    if (panel && rootNode().contains(panel)) return { key: panel, control: element, panel };
+  }
+  const owner = disclosureControls().find((control) => {
+    const panel = disclosurePanel(control);
+    return panel === element || panel?.contains(element);
+  });
+  if (owner) return { key: disclosurePanel(owner), control: owner, panel: disclosurePanel(owner) };
+  const panel = element.closest("[id]");
+  if (panel) {
+    const control = disclosureControls().find((item) => item.getAttribute("aria-controls") === panel.id);
+    if (control) return { key: panel, control, panel };
+  }
+  return null;
+}
+
+function archivePair(element) {
+  const translation = element.nextElementSibling?.classList.contains("llt-translation") ? element.nextElementSibling : null;
+  if (!translation) return null;
+  const original = markdownInline(element);
+  const translated = markdownInline(translation);
+  const prefix = /^H[1-4]$/.test(element.tagName) ? `${"#".repeat(Number(element.tagName[1]) + 1)} ` : element.tagName === "LI" ? "- " : element.tagName === "BLOCKQUOTE" ? "> " : "";
+  return {
+    markdown: [`${prefix}${original}`, "", `${prefix}${translated}`, ""],
+    html: `<section class="pair"><div class="original">${element.outerHTML}</div><div class="translation">${translation.innerHTML}</div></section>`,
+    original,
+    translated,
+  };
+}
+
 function buildArchive() {
   const title = articleTitle();
   const info = courseInfo();
@@ -187,6 +253,7 @@ function buildArchive() {
   const archiveNodes = [...blocks, ...visuals].sort((a, b) => a === b ? 0 : a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
   const markdown = [`# ${title}`, "", `> Source: ${canonicalUrl()}`, `> Saved: ${new Date().toISOString()}`, ""];
   const htmlBlocks = [];
+  const emittedDisclosures = new Set();
   const mediaCount = rootNode().querySelectorAll("video, iframe").length;
   for (const element of archiveNodes) {
     if (element.matches("figure, img")) {
@@ -197,15 +264,24 @@ function buildArchive() {
       const first = images[0]; if (first?.src) markdown.push(`![${first.alt || "课程图示"}](${first.src})`, "");
       htmlBlocks.push(`<div class="visual">${clone.outerHTML}</div>`); continue;
     }
-    const translation = element.nextElementSibling?.classList.contains("llt-translation") ? element.nextElementSibling : null;
-    if (!translation) continue;
-    const original = markdownInline(element);
-    const translated = markdownInline(translation);
-    const prefix = /^H[1-4]$/.test(element.tagName) ? `${"#".repeat(Number(element.tagName[1]) + 1)} ` : element.tagName === "LI" ? "- " : element.tagName === "BLOCKQUOTE" ? "> " : "";
-    markdown.push(`${prefix}${original}`, "", `${prefix}${translated}`, "");
-    htmlBlocks.push(`<section class="pair"><div class="original">${element.outerHTML}</div><div class="translation">${translation.innerHTML}</div></section>`);
+    const disclosure = disclosureFor(element);
+    if (disclosure) {
+      if (emittedDisclosures.has(disclosure.key)) continue;
+      emittedDisclosures.add(disclosure.key);
+      const members = blocks.filter((block) => disclosureFor(block)?.key === disclosure.key);
+      const controlPair = archivePair(disclosure.control);
+      const bodyPairs = members.filter((block) => block !== disclosure.control).map(archivePair).filter(Boolean);
+      if (!controlPair || !bodyPairs.length) continue;
+      markdown.push("<details open>", "", `<summary><strong>${escapeHtml(controlPair.original)}</strong><br>${escapeHtml(controlPair.translated)}</summary>`, "", ...bodyPairs.flatMap((pair) => pair.markdown), "</details>", "");
+      htmlBlocks.push(`<details class="qa" open><summary><span class="original">${escapeHtml(controlPair.original)}</span><span class="translation">${escapeHtml(controlPair.translated)}</span></summary><div class="answer">${bodyPairs.map((pair) => pair.html).join("\n")}</div></details>`);
+      continue;
+    }
+    const pair = archivePair(element);
+    if (!pair) continue;
+    markdown.push(...pair.markdown);
+    htmlBlocks.push(pair.html);
   }
-  const printCss = `@page{size:A4;margin:18mm 16mm 20mm}*{box-sizing:border-box}body{font:16px/1.75 -apple-system,BlinkMacSystemFont,"Noto Sans CJK SC","PingFang SC",sans-serif;max-width:920px;margin:42px auto;padding:0 28px;color:#202124}h1{font-size:2.15rem;line-height:1.25;margin:0 0 .5em}h2,h3{break-after:avoid}.meta{font-size:12px;color:#777;border-bottom:1px solid #ddd;padding-bottom:16px}.pair{margin:1.6em 0;break-inside:avoid}.original{color:#555}.translation{margin-top:.65em;padding:.8em 1.05em;border-left:3px solid #d98300;background:#fff8ed}code{font-family:"SFMono-Regular",Consolas,monospace;background:#f3f4f6;padding:.08em .28em;border-radius:4px}pre{overflow:auto;background:#f5f5f5;padding:1em;white-space:pre-wrap}img,svg{max-width:100%}a{color:#245faa;text-decoration:none}nav{break-after:page}nav li{margin:.35em 0}.chapter-page{break-before:page}@media print{body{margin:0;padding:0;font-size:10.5pt}.pair{break-inside:auto}.translation,pre,blockquote,table{break-inside:avoid}a{color:inherit}.meta{font-size:8.5pt}}`;
+  const printCss = `@page{size:A4;margin:18mm 16mm 20mm}*{box-sizing:border-box}body{font:16px/1.75 -apple-system,BlinkMacSystemFont,"Noto Sans CJK SC","PingFang SC",sans-serif;max-width:920px;margin:42px auto;padding:0 28px;color:#202124}h1{font-size:2.15rem;line-height:1.25;margin:0 0 .5em}h2,h3{break-after:avoid}.meta{font-size:12px;color:#777;border-bottom:1px solid #ddd;padding-bottom:16px}.pair{margin:1.6em 0;break-inside:avoid}.original{color:#555}.translation{margin-top:.65em;padding:.8em 1.05em;border-left:3px solid #d98300;background:#fff8ed}.qa{margin:1.6em 0;border:1px solid #ddd;border-radius:10px;overflow:hidden}.qa>summary{cursor:pointer;padding:1em 1.15em;background:#f6f6f6;font-weight:650}.qa>summary span{display:block}.qa>summary .translation{margin:.45em 0 0;padding:0;border:0;background:none;color:#7a4a00}.qa>.answer{padding:.1em 1.15em 1em}.qa>.answer .pair{margin:1em 0}code{font-family:"SFMono-Regular",Consolas,monospace;background:#f3f4f6;padding:.08em .28em;border-radius:4px}pre{overflow:auto;background:#f5f5f5;padding:1em;white-space:pre-wrap}img,svg{max-width:100%}a{color:#245faa;text-decoration:none}nav{break-after:page}nav li{margin:.35em 0}.chapter-page{break-before:page}@media print{body{margin:0;padding:0;font-size:10.5pt}.pair{break-inside:auto}.translation,pre,blockquote,table,.qa{break-inside:avoid}a{color:inherit}.meta{font-size:8.5pt}}`;
   if (mediaCount) markdown.splice(5, 0, `> 本页包含 ${mediaCount} 个在线课程媒体；离线讲义不复制视频，请通过 Source 返回已购买课程观看。`, "");
   const mediaNote = mediaCount ? `<aside class="media-note">本页包含 ${mediaCount} 个在线课程媒体。离线讲义不复制视频，请通过来源地址返回已购买课程观看。</aside>` : "";
   const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title.replace(/[<>&]/g, "")}</title><style>${printCss}.media-note{padding:12px 15px;background:#eef5ff;border-left:3px solid #4b78b8;margin:1em 0}</style></head><body><main><h1>${title.replace(/[<>&]/g, "")}</h1><p class="meta">来源：<a href="${canonicalUrl()}">${canonicalUrl()}</a><br>归档时间：${new Date().toLocaleString()}</p>${mediaNote}${htmlBlocks.join("\n")}</main></body></html>`;
@@ -315,7 +391,7 @@ async function exportLibrary(requestedCourseId = courseInfo().slug) {
   const tocHtml = `<nav id="toc" class="toc"><div class="section-label">CONTENTS</div><h1>课程目录</h1><p class="legend"><span>✓ 双语讲义</span><span>↗ 练习题链接</span><span>○ 尚未归档</span></p>${course.chapters.map((chapter, chapterIndex) => `<section class="toc-chapter"><h2><a href="#${anchorId("chapter", chapterIndex + 1)}"><span>${String(chapterIndex + 1).padStart(2, "0")}</span>${escapeHtml(chapter.title)}</a></h2><ol>${chapter.items.map((item, itemIndex) => { const number = `${chapterIndex + 1}.${itemIndex + 1}`; if (pageById.has(String(item.id))) return `<li class="ready"><a href="#${anchorId("article", item.id)}"><b>✓</b><span>${number} ${escapeHtml(item.title)}</span></a></li>`; if (isExercise(item)) return `<li class="exercise"><a href="${escapeHtml(item.url)}"><b>↗</b><span>${number} ${escapeHtml(item.title)}</span><small>练习题</small></a></li>`; return `<li class="missing"><b>○</b><span>${number} ${escapeHtml(item.title)}</span><small>尚未归档</small></li>`; }).join("")}</ol></section>`).join("")}</nav>`;
   const articles = course.chapters.map((chapter, chapterIndex) => { const chapterReady = ready.filter((entry) => entry.chapterIndex === chapterIndex); if (!chapterReady.length) return ""; const chapterId = anchorId("chapter", chapterIndex + 1); const divider = `<section class="chapter-divider" id="${chapterId}"><div class="section-label">CHAPTER ${String(chapterIndex + 1).padStart(2, "0")}</div><h1>${escapeHtml(chapter.title)}</h1><ol>${chapterReady.map((entry) => `<li><a href="#${anchorId("article", entry.page.id)}">${entry.itemIndex + 1}. ${escapeHtml(entry.page.title)}</a></li>`).join("")}</ol><a class="back" href="#toc">⌂ 返回总目录</a></section>`; const bodies = chapterReady.map((entry) => { const index = ready.indexOf(entry), previous = ready[index - 1], next = ready[index + 1]; let main = entry.page.html.match(/<main>([\s\S]*)<\/main>/)?.[1] || entry.page.html.match(/<body>([\s\S]*)<\/body>/)?.[1] || ""; main = namespaceArticleHtml(main, entry.page.id); const nav = `<nav class="article-nav"><a href="#toc">⌂ 总目录</a><a href="#${chapterId}">↑ 本章目录</a>${previous ? `<a href="#${anchorId("article", previous.page.id)}">← ${escapeHtml(previous.page.title)}</a>` : ""}${next ? `<a href="#${anchorId("article", next.page.id)}">${escapeHtml(next.page.title)} →</a>` : ""}</nav>`; return `<article class="chapter-page" id="${anchorId("article", entry.page.id)}"><div class="article-kicker">${chapterIndex + 1}.${entry.itemIndex + 1} · ${escapeHtml(chapter.title)}</div>${nav}${main}${nav}</article>`; }).join(""); return divider + bodies; }).join("");
   const title = escapeHtml(course?.title && course.title !== "LeetCode Explore" ? course.title : "LeetCode Explore 双语讲义");
-  const css = `@page{size:A4;margin:17mm 16mm 19mm}*{box-sizing:border-box}html{scroll-behavior:smooth}body{font:16px/1.75 -apple-system,BlinkMacSystemFont,"Noto Sans CJK SC","PingFang SC",sans-serif;max-width:980px;margin:auto;padding:0 32px;color:#202124;background:#f5f2ec}.cover,.toc,.chapter-divider,.chapter-page{background:#fff;padding:58px 64px;margin:28px 0;border-radius:18px;box-shadow:0 8px 35px #27231c14}.cover{min-height:82vh;display:grid;align-content:center;break-after:page}.brand,.section-label,.article-kicker{font:700 12px/1.2 system-ui;letter-spacing:.18em;color:#b86400}.cover h1{font-size:3.2rem;line-height:1.1;max-width:700px;margin:.3em 0}.cover .subtitle{font-size:1.25rem;color:#68625b}.cover .meta{margin-top:5em;border:0}.toc{break-after:page}.legend{display:flex;gap:1.4em;color:#777;font-size:.85rem}.toc-chapter{margin:2em 0}.toc-chapter h2{border-bottom:1px solid #e7e0d6;padding-bottom:.35em}.toc-chapter h2 a{display:flex;gap:.8em;color:inherit;text-decoration:none}.toc-chapter h2 span{color:#c97813}.toc ol{list-style:none;padding:0}.toc li{display:flex;gap:.6em;padding:.28em 0}.toc li a,.toc li{color:#34312d;text-decoration:none}.toc li a{display:flex;gap:.6em;width:100%}.toc li b{color:#b86400}.toc small{margin-left:auto;color:#918a82}.missing{color:#999!important}.chapter-divider{min-height:65vh;display:grid;align-content:center;break-before:page;break-after:page}.chapter-divider h1{font-size:2.7rem}.chapter-divider a{color:#8a5200}.chapter-page{break-before:page}.chapter-page main>h1{font-size:2.15rem;line-height:1.2}.article-nav{display:flex;flex-wrap:wrap;gap:.55em 1.1em;margin:1em 0 2em;padding:.7em 0;border-top:1px solid #e7e0d6;border-bottom:1px solid #e7e0d6;font-size:.82rem}.article-nav a{color:#8a5200;text-decoration:none}.meta{font-size:.78rem;color:#817a72;border-bottom:1px solid #e7e0d6;padding-bottom:16px}.pair{margin:1.7em 0}.original{color:#555}.translation{margin-top:.65em;padding:.85em 1.1em;border-left:3px solid #d98300;background:#fff8ed;border-radius:0 8px 8px 0}code{font-family:"SFMono-Regular",Consolas,monospace;background:#f3f4f6;padding:.08em .28em;border-radius:4px}pre{white-space:pre-wrap;background:#f5f5f5;padding:1em}.back{display:inline-block;margin-top:2em;color:#a85d00;text-decoration:none}img,svg{max-width:100%}@media(max-width:700px){body{padding:0}.cover,.toc,.chapter-divider,.chapter-page{border-radius:0;margin:0;padding:30px 24px}.cover h1{font-size:2.3rem}.legend{display:block}}@media print{body{margin:0;padding:0;background:#fff;font-size:10.5pt}.cover,.toc,.chapter-divider,.chapter-page{box-shadow:none;border-radius:0;margin:0;padding:0}.cover{min-height:90vh}.chapter-divider{min-height:80vh}.pair{break-inside:auto}.translation,pre,blockquote,table{break-inside:avoid}.article-nav,.back{display:none}a{color:inherit}.toc a[href^="http"]:after{content:" ↗"}}`;
+  const css = `@page{size:A4;margin:17mm 16mm 19mm}*{box-sizing:border-box}html{scroll-behavior:smooth}body{font:16px/1.75 -apple-system,BlinkMacSystemFont,"Noto Sans CJK SC","PingFang SC",sans-serif;max-width:980px;margin:auto;padding:0 32px;color:#202124;background:#f5f2ec}.cover,.toc,.chapter-divider,.chapter-page{background:#fff;padding:58px 64px;margin:28px 0;border-radius:18px;box-shadow:0 8px 35px #27231c14}.cover{min-height:82vh;display:grid;align-content:center;break-after:page}.brand,.section-label,.article-kicker{font:700 12px/1.2 system-ui;letter-spacing:.18em;color:#b86400}.cover h1{font-size:3.2rem;line-height:1.1;max-width:700px;margin:.3em 0}.cover .subtitle{font-size:1.25rem;color:#68625b}.cover .meta{margin-top:5em;border:0}.toc{break-after:page}.legend{display:flex;gap:1.4em;color:#777;font-size:.85rem}.toc-chapter{margin:2em 0}.toc-chapter h2{border-bottom:1px solid #e7e0d6;padding-bottom:.35em}.toc-chapter h2 a{display:flex;gap:.8em;color:inherit;text-decoration:none}.toc-chapter h2 span{color:#c97813}.toc ol{list-style:none;padding:0}.toc li{display:flex;gap:.6em;padding:.28em 0}.toc li a,.toc li{color:#34312d;text-decoration:none}.toc li a{display:flex;gap:.6em;width:100%}.toc li b{color:#b86400}.toc small{margin-left:auto;color:#918a82}.missing{color:#999!important}.chapter-divider{min-height:65vh;display:grid;align-content:center;break-before:page;break-after:page}.chapter-divider h1{font-size:2.7rem}.chapter-divider a{color:#8a5200}.chapter-page{break-before:page}.chapter-page main>h1{font-size:2.15rem;line-height:1.2}.article-nav{display:flex;flex-wrap:wrap;gap:.55em 1.1em;margin:1em 0 2em;padding:.7em 0;border-top:1px solid #e7e0d6;border-bottom:1px solid #e7e0d6;font-size:.82rem}.article-nav a{color:#8a5200;text-decoration:none}.meta{font-size:.78rem;color:#817a72;border-bottom:1px solid #e7e0d6;padding-bottom:16px}.pair{margin:1.7em 0}.original{color:#555}.translation{margin-top:.65em;padding:.85em 1.1em;border-left:3px solid #d98300;background:#fff8ed;border-radius:0 8px 8px 0}.qa{margin:1.7em 0;border:1px solid #ded8cf;border-radius:10px;overflow:hidden}.qa>summary{cursor:pointer;padding:1em 1.15em;background:#f6f3ee;font-weight:650}.qa>summary span{display:block}.qa>summary .translation{margin:.45em 0 0;padding:0;border:0;background:none;color:#8a5200}.qa>.answer{padding:.1em 1.15em 1em}.qa>.answer .pair{margin:1em 0}code{font-family:"SFMono-Regular",Consolas,monospace;background:#f3f4f6;padding:.08em .28em;border-radius:4px}pre{white-space:pre-wrap;background:#f5f5f5;padding:1em}.back{display:inline-block;margin-top:2em;color:#a85d00;text-decoration:none}img,svg{max-width:100%}@media(max-width:700px){body{padding:0}.cover,.toc,.chapter-divider,.chapter-page{border-radius:0;margin:0;padding:30px 24px}.cover h1{font-size:2.3rem}.legend{display:block}}@media print{body{margin:0;padding:0;background:#fff;font-size:10.5pt}.cover,.toc,.chapter-divider,.chapter-page{box-shadow:none;border-radius:0;margin:0;padding:0}.cover{min-height:90vh}.chapter-divider{min-height:80vh}.pair{break-inside:auto}.translation,pre,blockquote,table,.qa{break-inside:avoid}.article-nav,.back{display:none}a{color:inherit}.toc a[href^="http"]:after{content:" ↗"}}`;
   const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title><style>${css}</style></head><body><header class="cover"><div class="brand">BLOSSOM LINGO</div><h1>${title}</h1><p class="subtitle">中英双语课程讲义</p><p class="meta">本地模型翻译 · 个人学习归档<br>${new Date().toLocaleDateString()}</p></header>${tocHtml}${articles}</body></html>`;
   const baseName = safeName(course?.title || "leetcode-explore");
   const markdownName = `${baseName}-bilingual.md`;
@@ -345,7 +421,8 @@ async function run() {
   STATE.running = true;
   const token = ++STATE.abort;
   try {
-    progress("正在识别 LeetCode 正文…");
+    progress("正在展开并识别 LeetCode 正文…");
+    await expandCollapsedContent();
     const elements = collect();
     if (!elements.length) throw new Error("没有识别到可翻译的正文，请等待页面加载完成后重试");
     const config = await chrome.storage.sync.get({ model: "qwen3:8b", targetLanguage: "Simplified Chinese" });
@@ -405,6 +482,7 @@ function removeTranslations() {
     delete node.dataset.lltDone;
     node.classList.remove("llt-original-hidden");
   });
+  document.querySelectorAll(".llt-force-expanded").forEach((node) => node.classList.remove("llt-force-expanded"));
 }
 
 function handleCommand(message) {
